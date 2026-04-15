@@ -19,7 +19,7 @@
 
 **Для обычных пользователей** - без bat-файлов, поиска папок и правки конфигов в блокноте!
 
-<img width="1630" height="776" alt="Настройки и модификации" src="https://github.com/user-attachments/assets/770ef70d-dbe6-4ae8-b78d-f901319d64f8" /> 
+<img width="1630" height="776" alt="Настройки" src="https://github.com/user-attachments/assets/89c2f9ce-f35f-472e-9f73-98df4c5ff27e" />
 
 ## ✨ Возможности
 
