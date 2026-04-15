@@ -114,4 +114,3 @@ python -m zapret_hub.main
 .venv\Scripts\python.exe -m PyInstaller -y packaging\install_zaprethub.spec
 ```
 **Результат**: `dist\install_zaprethub.exe`
-```
