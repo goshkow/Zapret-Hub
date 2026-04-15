@@ -65,9 +65,9 @@
 
 | Инструмент | Автор |
 |------------|--------|
-| `zapret-discord-youtube` | **Flowseal** |
-| `tg-ws-proxy` | **Flowseal** |
-| `zapret` экосистема | **bol-van** |
+| [zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) | **Flowseal** |
+| [tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) | **Flowseal** |
+| [zapret](https://github.com/bol-van/zapret-win-bundle) экосистема | **bol-van** |
 
 **Zapret Hub** = интерфейс + менеджер **поверх** этих инструментов.
 
