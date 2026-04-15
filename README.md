@@ -1,104 +1,80 @@
-# Zapret Hub
+# 🚀 Zapret Hub
 
-**Zapret Hub** — это Windows-приложение для удобного управления `zapret` и `tg-ws-proxy` из одного интерфейса.
+**Zapret Hub** - Windows-приложение для **удобного управления** `zapret` и `tg-ws-proxy` из **одного интерфейса**.
 
-Автор: **goshkow**
+<img width="1082" height="669" alt="Главный интерфейс Zapret-Hub" src="https://github.com/user-attachments/assets/f369d833-3dae-4a3b-ae2e-40502af5713c" />
 
-## Что это такое
+**Автор**: goshkow • [GitHub](https://github.com/goshkow/Zapret-Hub)
 
-Проект объединяет в одном окне:
+## 💡 Что это такое
 
-- запуск и остановку `Zapret` и `TG WS Proxy`;
-- выбор `general`-конфигураций для `zapret`;
-- импорт и включение модификаций;
-- базовую диагностику и тестирование конфигураций;
-- просмотр логов и рабочих файлов;
-- portable-сборку и отдельный установщик.
+Проект объединяет в **одном окне**:
 
-Приложение рассчитано на обычного пользователя: без ручного запуска `bat`-файлов, без поиска нужных папок и без правки конфигов в блокноте.
+✅ запуск/остановку `Zapret` и `TG WS Proxy`  
+✅ выбор `general`-конфигураций для `zapret`  
+✅ импорт модификаций  
+✅ диагностику и тестирование  
+✅ просмотр логов и файлов  
+✅ portable-сборку + установщик  
 
-## Возможности
+**Для обычных пользователей** - без bat-файлов, поиска папок и правки конфигов в блокноте!
 
-- единая кнопка подключения и отключения;
-- отдельное включение `Zapret` и `TG WS Proxy` в общем сценарии;
-- запуск в фоне и сворачивание в трей только когда реально работает хотя бы один компонент;
-- автозапуск с Windows;
-- импорт модификаций из папки, `zip`, отдельных файлов и GitHub-репозитория;
-- безопасная сборка активного runtime без перезаписи базовых файлов;
-- выбор и тестирование `general`-конфигураций;
-- встроенный просмотр файлов, логов и диагностики;
-- светлая и тёмная темы;
-- русский и английский интерфейс;
-- portable-версия и установщик.
+<img width="1630" height="776" alt="Настройки и модификации" src="https://github.com/user-attachments/assets/770ef70d-dbe6-4ae8-b78d-f901319d64f8" />
 
-## Используемые проекты
+## ✨ Возможности
 
-В приложении используются bundled-компоненты:
+| Фича | Описание |
+|------|----------|
+| 🎮 **Единая кнопка** | Подключение/отключение одним кликом |
+| ⚙️ **Гибкая работа** | Отдельный старт Zapret + TG WS Proxy |
+| 🌙 **Трей и фон** | Сворачивается только при активной работе |
+| 🚀 **Автозапуск** | С Windows |
+| 📦 **Моды** | Импорт из папки/ZIP/GitHub/файлов |
+| 🛡️ **Безопасность** | Отдельный runtime, бэкапы базовых файлов |
+| 🔍 **Диагностика** | Тестирование general'ей + логи |
+| 🎨 **UI** | Светлая/тёмная тема, RU/EN |
+| 📱 **Форматы** | Portable + установщик (x64/ARM64) |
 
-- `zapret-discord-youtube` — **Flowseal**;
-- `tg-ws-proxy` — **Flowseal**;
-- экосистема `zapret` — **bol-van**.
+<img width="1743" height="661" alt="Расширенные настройки" src="https://github.com/user-attachments/assets/a1a2e222-5ca4-4de9-9d02-30acd866c141" />
 
-`Zapret Hub` — это отдельный интерфейс и менеджер поверх этих инструментов.
+## 🔗 Используемые проекты
 
-## Структура проекта
+| Инструмент | Автор |
+|------------|--------|
+| `zapret-discord-youtube` | **Flowseal** |
+| `tg-ws-proxy` | **Flowseal** |
+| `zapret` экосистема | **bol-van** |
+
+**Zapret Hub** = интерфейс + менеджер **поверх** этих инструментов.
+
+## 📁 Структура проекта
 
 Основные каталоги:
 
-- `src/zapret_hub` — прикладная логика, UI и сервисы;
-- `installer` — код установщика;
-- `packaging` — `.spec`-файлы PyInstaller;
-- `runtime` — встроенные runtime-файлы bundled-инструментов;
-- `sample_data` — стартовые данные проекта;
-- `ui_assets` — иконки и UI-ресурсы.
+- `📂 src/zapret_hub` — прикладная логика, UI и сервисы;
+- `📂 installer` — код установщика;
+- `📂 packaging` — `.spec`-файлы PyInstaller;
+- `📂 runtime` — встроенные runtime-файлы bundled-инструментов;
+- `📂 sample_data` — стартовые данные проекта;
+- `📂 ui_assets` — иконки и UI-ресурсы.
 
 Рабочие каталоги, которые появляются во время использования приложения:
 
-- `data`
-- `logs`
-- `cache`
-- `mods`
-- `merged_runtime`
-- `backups`
+- `📂 data`
+- `📂 logs`
+- `📂 cache`
+- `📂 mods`
+- `📂 merged_runtime`
+- `📂 backups`
 
-Их не нужно загружать в GitHub.
 
-## Требования
+## 💻 Требования
 
-- Windows 10/11
-- Python 3.11+
-- PowerShell 5+ или PowerShell 7+
+- 🪟 Windows 10/11
+- 🐍 Python 3.11+
+- ⚡ PowerShell 5+ / 7+
 
-## Запуск в разработке
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .[dev]
-python -m zapret_hub.main
-```
-
-## Сборка
-
-### Приложение
-
-```powershell
-.venv\Scripts\python.exe -m PyInstaller -y packaging\zapret_hub.spec
-```
-
-Готовая сборка появится в `dist\zapret_hub`.
-
-### Установщик
-
-Перед сборкой установщика нужно подготовить payload с уже собранным приложением.
-
-```powershell
-.venv\Scripts\python.exe -m PyInstaller -y packaging\install_zaprethub.spec
-```
-
-Готовый установщик появится в `dist\install_zaprethub.exe`.
-
-## Portable и installer
+## 📦 Portable и Installer
 
 В проекте используются два основных формата поставки:
 
@@ -107,31 +83,35 @@ python -m zapret_hub.main
 - `portable\win_arm64` — portable для Windows ARM64;
 - `install_zaprethub.exe` — установщик.
 
-## Модификации
 
-Модификации подключаются отдельно от базовой сборки.
+## 🛠 Модификации
 
-Приложение:
+🔹 Хранит моды **отдельно**  
+🔹 **Не трогает** базовые файлы  
+🔹 Собирает runtime в `merged_runtime/`  
+🔹 Импорт general/списков из GitHub/ZIP  
+🔹 **Блокирует** импорт оригинала Flowseal как мод  
 
-- хранит каждую модификацию отдельно;
-- не перезаписывает базовые файлы напрямую;
-- собирает активную конфигурацию в отдельный runtime;
-- умеет импортировать совместимые `general`, списки и сопутствующие файлы;
-- умеет скачивать модификации из GitHub-репозиториев;
-- не позволяет импортировать оригинальный репозиторий Flowseal как пользовательскую модификацию.
+## 🧪 Запуск в разработке
 
-## Публикация на GitHub
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .[dev]
+python -m zapret_hub.main
+```
 
-Для публикации исходников достаточно следующих каталогов и файлов:
+## 🔨 Сборка
 
-- `src`
-- `installer`
-- `packaging`
-- `runtime`
-- `sample_data`
-- `ui_assets`
-- `pyproject.toml`
-- `README.md`
-- `.gitignore`
+### Приложение
+```powershell
+.venv\Scripts\python.exe -m PyInstaller -y packaging\zapret_hub.spec
+```
+**Результат**: `dist\zapret_hub\`
 
-Сборочные каталоги, кэши, portable-артефакты и логи в репозиторий загружать не нужно.
+### Установщик
+```powershell
+.venv\Scripts\python.exe -m PyInstaller -y packaging\install_zaprethub.spec
+```
+**Результат**: `dist\install_zaprethub.exe`
+```
