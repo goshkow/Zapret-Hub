@@ -6,7 +6,7 @@
 
 **Для обычных пользователей** - без bat-файлов, поиска папок и правки конфигов в блокноте!
 
-<img width="1082" height="669" alt="Главный интерфейс Zapret-Hub" src="https://github.com/user-attachments/assets/7acbcb67-d79f-4cde-b66b-ed6dcbaf901d" />
+<img width="1085" height="659" alt="Главная страница" src="https://github.com/user-attachments/assets/c75412f5-3438-4a9f-8133-e9fc74d3e1ba" />
 
 **Автор**: goshkow • [GitHub](https://github.com/goshkow/Zapret-Hub)
 
@@ -25,8 +25,6 @@
 ✅ portable-сборку + установщик  
 
 > Приложение не запускает дополнительные программы, все обходы встроены и не требуют настройки вне приложения.
-
-<img width="1630" height="776" alt="Настройки" src="https://github.com/user-attachments/assets/89c2f9ce-f35f-472e-9f73-98df4c5ff27e" />
 
 ## ✨ Возможности
 
@@ -50,8 +48,7 @@
 🔹 Собирает runtime в `merged_runtime/`  
 🔹 Импорт general/списков из GitHub/ZIP  
 
-<img width="1743" height="661" alt="Модификации" src="https://github.com/user-attachments/assets/eecec5b1-37e8-4c6c-8121-3d74a455aaf6" />
-
+<img width="1075" height="653" alt="Модификации" src="https://github.com/user-attachments/assets/f0d51735-c6ab-45fa-97da-83c558030110" />
 
 ## 💻 Требования
 
