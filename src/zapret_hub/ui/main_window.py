@@ -10,8 +10,8 @@ from pathlib import Path
 
 from zapret_hub import __version__
 from zapret_hub.domain import ComponentDefinition, ComponentState
-from PySide6.QtCore import QCoreApplication, QEasingCurve, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal, QPropertyAnimation
-from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QCoreApplication, QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QPropertyAnimation, QParallelAnimationGroup, Property, QByteArray
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsBlurEffect,
     QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
@@ -47,7 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from zapret_hub.bootstrap import ApplicationContext
-from zapret_hub.ui.theme import build_stylesheet
+from zapret_hub.ui.theme import build_stylesheet, is_light_theme
 
 
 @dataclass(slots=True)
@@ -82,13 +83,592 @@ class SidebarPanel(QFrame):
         super().__init__(parent)
         self._border_color = QColor("#24304a")
         self._cut_size = 18
+        self._highlight_rect = QRect(0, 0, 0, 0)
+        self._highlight_fill = QColor(69, 81, 109, 72)
+        self._highlight_border = QColor("#4f73b3")
+        self._highlight_animation: QPropertyAnimation | None = None
 
     def set_theme(self, theme: str) -> None:
-        self._border_color = QColor("#d2ddeb" if theme == "light" else "#24304a")
+        light = is_light_theme(theme)
+        if light:
+            self._border_color = QColor("#d2ddeb")
+            self._highlight_fill = QColor(191, 211, 243, 118)
+            self._highlight_border = QColor("#9cb7ea")
+        elif theme == "night":
+            self._border_color = QColor("#24304a")
+            self._highlight_fill = QColor(79, 115, 179, 68)
+            self._highlight_border = QColor("#4f73b3")
+        else:
+            self._border_color = QColor("#2f333a")
+            self._highlight_fill = QColor(96, 108, 124, 66)
+            self._highlight_border = QColor("#717a87")
         self.update()
 
     def paintEvent(self, event: QEvent) -> None:
         super().paintEvent(event)
+        if not self._highlight_rect.isNull():
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(QPen(self._highlight_border, 1))
+            painter.setBrush(self._highlight_fill)
+            painter.drawRoundedRect(QRectF(self._highlight_rect), 12, 12)
+
+    def _get_highlight_rect(self) -> QRect:
+        return QRect(self._highlight_rect)
+
+    def _set_highlight_rect(self, rect: QRect) -> None:
+        self._highlight_rect = QRect(rect)
+        self.update()
+
+    highlightRect = Property(QRect, _get_highlight_rect, _set_highlight_rect)
+
+    def move_highlight(self, rect: QRect, *, animated: bool = True) -> None:
+        target = QRect(rect)
+        if target.isNull():
+            return
+        if self._highlight_animation is not None:
+            self._highlight_animation.stop()
+        if not animated or self._highlight_rect.isNull():
+            self._highlight_rect = target
+            self.update()
+            return
+        animation = QPropertyAnimation(self, b"highlightRect", self)
+        animation.setDuration(260)
+        animation.setStartValue(self._highlight_rect)
+        animation.setEndValue(target)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.start()
+        self._highlight_animation = animation
+
+    def clear_highlight(self) -> None:
+        if self._highlight_animation is not None:
+            self._highlight_animation.stop()
+            self._highlight_animation = None
+        self._highlight_rect = QRect()
+        self.update()
+
+
+class AnimatedNavButton(QToolButton):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._hover_progress = 0.0
+        self._icon_dx = 0.0
+        self._icon_dy = 0.0
+        self._icon_scale = 1.0
+        self._glow_pos = QPointF(22.0, 22.0)
+        self._light_theme = False
+        self._theme_name = "night"
+        self._anims: list[QPropertyAnimation] = []
+
+    def set_nav_theme(self, theme: str) -> None:
+        self._theme_name = theme
+        self._light_theme = is_light_theme(theme)
+        self.update()
+
+    def _stop_anims(self) -> None:
+        for anim in self._anims:
+            anim.stop()
+        self._anims.clear()
+
+    def _animate_property(self, name: bytes, start: float, end: float, duration: int) -> None:
+        animation = QPropertyAnimation(self, name, self)
+        animation.setStartValue(start)
+        animation.setEndValue(end)
+        animation.setDuration(duration)
+        animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        animation.finished.connect(lambda: self._anims.remove(animation) if animation in self._anims else None)
+        self._anims.append(animation)
+        animation.start()
+
+    def enterEvent(self, event: QEvent) -> None:
+        self._animate_property(b"hoverProgress", self._hover_progress, 1.0, 220)
+        self._animate_property(b"iconScale", self._icon_scale, 1.035, 240)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self._animate_property(b"hoverProgress", self._hover_progress, 0.0, 220)
+        self._animate_property(b"iconScale", self._icon_scale, 1.0, 220)
+        self._animate_property(b"iconDx", self._icon_dx, 0.0, 180)
+        self._animate_property(b"iconDy", self._icon_dy, 0.0, 180)
+        super().leaveEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        pos = event.position()
+        self._glow_pos = QPointF(pos.x(), pos.y())
+        center = QPointF(self.width() / 2.0, self.height() / 2.0)
+        dx = max(-1.0, min(1.0, (pos.x() - center.x()) / max(8.0, center.x())))
+        dy = max(-1.0, min(1.0, (pos.y() - center.y()) / max(8.0, center.y())))
+        self._icon_dx += (dx * 1.1 - self._icon_dx) * 0.18
+        self._icon_dy += (dy * 1.1 - self._icon_dy) * 0.18
+        self.update()
+        super().mouseMoveEvent(event)
+
+    def paintEvent(self, event: QEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = 12.0
+        checked = self.isChecked()
+
+        if self._light_theme:
+            base_fill = QColor(181, 204, 242, 10)
+            hover_fill = QColor(194, 214, 245, int(30 * self._hover_progress))
+            checked_fill = QColor(0, 0, 0, 0)
+            border = QColor(191, 210, 240, int(88 * self._hover_progress))
+            glow_color = QColor(255, 255, 255, int(44 * self._hover_progress))
+        elif self._theme_name == "night":
+            base_fill = QColor(90, 112, 152, 8)
+            hover_fill = QColor(95, 124, 177, int(26 * self._hover_progress))
+            checked_fill = QColor(0, 0, 0, 0)
+            border = QColor(102, 132, 191, int(84 * self._hover_progress))
+            glow_color = QColor(126, 164, 255, int(58 * self._hover_progress))
+        else:
+            base_fill = QColor(126, 133, 145, 7)
+            hover_fill = QColor(144, 151, 165, int(24 * self._hover_progress))
+            checked_fill = QColor(0, 0, 0, 0)
+            border = QColor(154, 162, 174, int(78 * self._hover_progress))
+            glow_color = QColor(208, 216, 232, int(34 * self._hover_progress))
+
+        fill = QColor(checked_fill if checked else base_fill)
+        if not checked and self._hover_progress > 0:
+            fill = hover_fill
+        painter.setPen(QPen(border if (border.alpha() > 0 and not checked) else QColor(0, 0, 0, 0), 1))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, radius, radius)
+
+        if self._hover_progress > 0:
+            glow = QRadialGradient(self._glow_pos, max(self.width(), self.height()) * 0.75)
+            glow.setColorAt(0.0, glow_color)
+            glow.setColorAt(1.0, QColor(glow_color.red(), glow_color.green(), glow_color.blue(), 0))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glow)
+            painter.drawRoundedRect(rect, radius, radius)
+
+        icon_size = max(20, round(26 * self._icon_scale))
+        pixmap = self.icon().pixmap(icon_size, icon_size)
+        target = QRectF(
+            (self.width() - icon_size) / 2.0 + self._icon_dx,
+            (self.height() - icon_size) / 2.0 + self._icon_dy,
+            icon_size,
+            icon_size,
+        )
+        painter.drawPixmap(target, pixmap, QRectF(0, 0, pixmap.width(), pixmap.height()))
+
+    def _get_hover_progress(self) -> float:
+        return self._hover_progress
+
+    def _set_hover_progress(self, value: float) -> None:
+        self._hover_progress = float(value)
+        self.update()
+
+    def _get_icon_dx(self) -> float:
+        return self._icon_dx
+
+    def _set_icon_dx(self, value: float) -> None:
+        self._icon_dx = float(value)
+        self.update()
+
+    def _get_icon_dy(self) -> float:
+        return self._icon_dy
+
+    def _set_icon_dy(self, value: float) -> None:
+        self._icon_dy = float(value)
+        self.update()
+
+    def _get_icon_scale(self) -> float:
+        return self._icon_scale
+
+    def _set_icon_scale(self, value: float) -> None:
+        self._icon_scale = float(value)
+        self.update()
+
+    hoverProgress = Property(float, _get_hover_progress, _set_hover_progress)
+    iconDx = Property(float, _get_icon_dx, _set_icon_dx)
+    iconDy = Property(float, _get_icon_dy, _set_icon_dy)
+    iconScale = Property(float, _get_icon_scale, _set_icon_scale)
+
+
+class ClickSelectComboBox(QComboBox):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        view = self.view()
+        if view is not None:
+            view.viewport().installEventFilter(self)
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        event.ignore()
+
+    def showPopup(self) -> None:
+        super().showPopup()
+        view = self.view()
+        if view is not None:
+            view.viewport().installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        view = self.view()
+        if view is not None and watched is view.viewport() and event.type() == QEvent.Type.MouseButtonRelease:
+            index = view.indexAt(event.pos())
+            if index.isValid():
+                self.setCurrentIndex(index.row())
+                self.hidePopup()
+                self.activated.emit(index.row())
+                return True
+        return super().eventFilter(watched, event)
+
+
+class AnimatedPowerButton(QToolButton):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._light_theme = False
+        self._theme_name = "night"
+        self._active = False
+        self._visual_mode = "off"
+        self._visual_scale = 1.0
+        self._hover_progress = 0.0
+        self._glow_pos = QPointF(66.0, 66.0)
+        self._wave_progress = 0.0
+        self._wave_strength = 0.0
+        self._wave_outward = True
+        self._scale_anim: QPropertyAnimation | None = None
+        self._hover_anim: QPropertyAnimation | None = None
+        self._wave_progress_anim: QPropertyAnimation | None = None
+        self._wave_strength_anim: QPropertyAnimation | None = None
+
+    def set_power_theme(self, theme: str) -> None:
+        self._theme_name = theme
+        self._light_theme = is_light_theme(theme)
+        self.update()
+
+    def set_active_state(self, active: bool, *, animate: bool = True) -> None:
+        self._active = active
+        self._visual_mode = "on" if active else "off"
+        target = 1.14 if active else 1.0
+        if self._scale_anim is not None:
+            self._scale_anim.stop()
+        if not animate:
+            self._visual_scale = target
+            self.update()
+            return
+        anim = QPropertyAnimation(self, b"visualScale", self)
+        anim.setDuration(220)
+        anim.setStartValue(self._visual_scale)
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.start()
+        self._scale_anim = anim
+
+    def set_loading_state(self, loading: bool, *, animate: bool = True) -> None:
+        self._visual_mode = "loading" if loading else ("on" if self._active else "off")
+        target = 1.06 if loading else (1.14 if self._active else 1.0)
+        if self._scale_anim is not None:
+            self._scale_anim.stop()
+        if not animate:
+            self._visual_scale = target
+            self.update()
+            return
+        anim = QPropertyAnimation(self, b"visualScale", self)
+        anim.setDuration(190)
+        anim.setStartValue(self._visual_scale)
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.start()
+        self._scale_anim = anim
+
+    def enterEvent(self, event: QEvent) -> None:
+        self._animate_hover(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self._animate_hover(0.0)
+        super().leaveEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self._glow_pos = event.position()
+        self.update()
+        super().mouseMoveEvent(event)
+
+    def _animate_hover(self, target: float) -> None:
+        if self._hover_anim is not None:
+            self._hover_anim.stop()
+        anim = QPropertyAnimation(self, b"hoverProgress", self)
+        anim.setDuration(240)
+        anim.setStartValue(self._hover_progress)
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.start()
+        self._hover_anim = anim
+
+    def play_wave(self, outward: bool) -> None:
+        self._wave_outward = outward
+        if self._wave_progress_anim is not None:
+            self._wave_progress_anim.stop()
+        if self._wave_strength_anim is not None:
+            self._wave_strength_anim.stop()
+        self._wave_progress = 0.0
+        self._wave_strength = 0.22
+        prog = QPropertyAnimation(self, b"waveProgress", self)
+        prog.setDuration(560)
+        prog.setStartValue(0.0)
+        prog.setEndValue(1.0)
+        prog.setEasingCurve(QEasingCurve.Type.OutCubic)
+        strength = QPropertyAnimation(self, b"waveStrength", self)
+        strength.setDuration(560)
+        strength.setStartValue(0.24)
+        strength.setEndValue(0.0)
+        strength.setEasingCurve(QEasingCurve.Type.OutCubic)
+        prog.start()
+        strength.start()
+        self._wave_progress_anim = prog
+        self._wave_strength_anim = strength
+
+    def paintEvent(self, event: QEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        rect = QRectF(self.rect())
+        center = rect.center()
+        base_radius = min(rect.width(), rect.height()) * 0.39
+        radius = base_radius * self._visual_scale
+
+        if self._light_theme:
+            off_top = QColor("#f7f9ff")
+            off_bottom = QColor("#dfe8f7")
+            off_border = QColor("#bfd2f0")
+            on_top = QColor("#7b86ff")
+            on_bottom = QColor("#4c58d8")
+            on_border = QColor("#7b87ff")
+            loading_top = QColor("#c7d3e6")
+            loading_bottom = QColor("#9ba8bd")
+            loading_border = QColor("#b9c6db")
+        else:
+            off_top = QColor("#5a5f67")
+            off_bottom = QColor("#3c4148")
+            off_border = QColor("#70757d")
+            on_top = QColor("#7380ff")
+            on_bottom = QColor("#4551cb")
+            on_border = QColor("#7b87ff")
+            loading_top = QColor("#707785")
+            loading_bottom = QColor("#565d69")
+            loading_border = QColor("#8b94a3")
+            if self._theme_name == "night":
+                off_top = QColor("#45506a")
+                off_bottom = QColor("#313a4d")
+                off_border = QColor("#56627d")
+            elif self._theme_name == "oled":
+                off_top = QColor("#2a2d33")
+                off_bottom = QColor("#181b20")
+                off_border = QColor("#3d424b")
+                loading_top = QColor("#4f535b")
+                loading_bottom = QColor("#353941")
+                loading_border = QColor("#5b626d")
+
+        gradient = QRadialGradient(center.x(), center.y() - radius * 0.36, radius * 1.3)
+        if self._visual_mode == "loading":
+            gradient.setColorAt(0.0, loading_top)
+            gradient.setColorAt(1.0, loading_bottom)
+            border = loading_border
+        elif self._active:
+            gradient.setColorAt(0.0, on_top)
+            gradient.setColorAt(1.0, on_bottom)
+            border = on_border
+        else:
+            gradient.setColorAt(0.0, off_top)
+            gradient.setColorAt(1.0, off_bottom)
+            border = off_border
+        painter.setPen(QPen(border, 2))
+        painter.setBrush(gradient)
+        painter.drawEllipse(center, radius, radius)
+
+        if self._hover_progress > 0.001:
+            if self._light_theme:
+                if self._active or self._visual_mode == "loading":
+                    glow_color = QColor(232, 243, 255, int(62 * self._hover_progress))
+                else:
+                    glow_color = QColor(109, 154, 255, int(34 * self._hover_progress))
+            else:
+                glow_color = QColor(148, 206, 255, int(34 * self._hover_progress))
+            dx = self._glow_pos.x() - center.x()
+            dy = self._glow_pos.y() - center.y()
+            distance = max(1.0, (dx * dx + dy * dy) ** 0.5)
+            max_offset = radius * 0.34
+            focus = QPointF(
+                center.x() + dx / distance * min(distance, max_offset),
+                center.y() + dy / distance * min(distance, max_offset),
+            )
+            button_path = QPainterPath()
+            button_path.addEllipse(center, radius, radius)
+            painter.save()
+            painter.setClipPath(button_path)
+            glow = QRadialGradient(focus, radius * (1.08 if self._light_theme else 0.98))
+            glow.setColorAt(0.0, glow_color)
+            glow.setColorAt(0.65, QColor(glow_color.red(), glow_color.green(), glow_color.blue(), max(0, glow_color.alpha() // 2)))
+            glow.setColorAt(1.0, QColor(glow_color.red(), glow_color.green(), glow_color.blue(), 0))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glow)
+            painter.drawEllipse(center, radius, radius)
+            painter.restore()
+
+        icon_size = 48 if self._active else 44
+        if self._visual_mode == "loading":
+            icon_size = 46
+        pixmap = self.icon().pixmap(icon_size, icon_size)
+        target = QRectF(center.x() - icon_size / 2.0, center.y() - icon_size / 2.0, icon_size, icon_size)
+        painter.drawPixmap(target, pixmap, QRectF(0, 0, pixmap.width(), pixmap.height()))
+
+    def _get_visual_scale(self) -> float:
+        return self._visual_scale
+
+    def _set_visual_scale(self, value: float) -> None:
+        self._visual_scale = float(value)
+        self.update()
+
+    def _get_wave_progress(self) -> float:
+        return self._wave_progress
+
+    def _set_wave_progress(self, value: float) -> None:
+        self._wave_progress = float(value)
+        self.update()
+
+    def _get_wave_strength(self) -> float:
+        return self._wave_strength
+
+    def _set_wave_strength(self, value: float) -> None:
+        self._wave_strength = float(value)
+        self.update()
+
+    def _get_hover_progress(self) -> float:
+        return self._hover_progress
+
+    def _set_hover_progress(self, value: float) -> None:
+        self._hover_progress = float(value)
+        self.update()
+
+    visualScale = Property(float, _get_visual_scale, _set_visual_scale)
+    waveProgress = Property(float, _get_wave_progress, _set_wave_progress)
+    waveStrength = Property(float, _get_wave_strength, _set_wave_strength)
+    hoverProgress = Property(float, _get_hover_progress, _set_hover_progress)
+
+
+class PowerAuraWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._light_theme = False
+        self._theme_name = "night"
+        self._wave_progress = 0.0
+        self._wave_strength = 0.0
+        self._wave_outward = True
+        self._center_point = QPointF()
+        self._wave_base_radius = 74.0
+        self._wave_travel_radius = 124.0
+        self._idle_enabled = False
+        self._idle_pulse_timer = QTimer(self)
+        self._idle_pulse_timer.setInterval(1480)
+        self._idle_pulse_timer.timeout.connect(self._play_idle_pulse)
+        self._wave_progress_anim: QPropertyAnimation | None = None
+        self._wave_strength_anim: QPropertyAnimation | None = None
+
+    def set_power_theme(self, theme: str) -> None:
+        self._theme_name = theme
+        self._light_theme = is_light_theme(theme)
+        self.update()
+
+    def set_center_point(self, point: QPointF) -> None:
+        self._center_point = QPointF(point)
+        self.update()
+
+    def set_idle_pulse_enabled(self, enabled: bool) -> None:
+        self._idle_enabled = enabled
+        if enabled:
+            if not self._idle_pulse_timer.isActive():
+                self._idle_pulse_timer.start()
+            if self._wave_strength <= 0.02:
+                self._play_idle_pulse()
+        else:
+            self._idle_pulse_timer.stop()
+
+    def _play_idle_pulse(self) -> None:
+        if not self._idle_enabled or self._wave_strength > 0.08:
+            return
+        self._play_wave_internal(outward=True, strength=0.30, duration=1450, base_radius=62.0, travel_radius=62.0)
+
+    def _play_wave_internal(self, *, outward: bool, strength: float, duration: int, base_radius: float, travel_radius: float) -> None:
+        self._wave_outward = outward
+        if self._wave_progress_anim is not None:
+            self._wave_progress_anim.stop()
+        if self._wave_strength_anim is not None:
+            self._wave_strength_anim.stop()
+        self._wave_progress = 0.0
+        self._wave_strength = strength
+        self._wave_base_radius = base_radius
+        self._wave_travel_radius = travel_radius
+        prog = QPropertyAnimation(self, b"waveProgress", self)
+        prog.setDuration(duration)
+        prog.setStartValue(0.0)
+        prog.setEndValue(1.0)
+        prog.setEasingCurve(QEasingCurve.Type.OutCubic)
+        fade = QPropertyAnimation(self, b"waveStrength", self)
+        fade.setDuration(duration)
+        fade.setStartValue(strength)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+        prog.start()
+        fade.start()
+        self._wave_progress_anim = prog
+        self._wave_strength_anim = fade
+
+    def play_wave(self, outward: bool) -> None:
+        self._play_wave_internal(outward=outward, strength=0.48, duration=820, base_radius=74.0, travel_radius=118.0)
+
+    def paintEvent(self, event: QEvent) -> None:
+        if self._wave_strength <= 0.001:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(self.rect()).adjusted(2.0, 2.0, -2.0, -2.0), 18.0, 18.0)
+        painter.setClipPath(clip)
+        center = self._center_point if not self._center_point.isNull() else QRectF(self.rect()).center()
+        if self._theme_name == "oled":
+            color = QColor(124, 134, 182, int(132 * self._wave_strength))
+        elif self._light_theme:
+            color = QColor(64, 116, 255, int(176 * self._wave_strength))
+        else:
+            color = QColor(122, 214, 255, int(168 * self._wave_strength))
+        base = self._wave_base_radius
+        travel = self._wave_travel_radius * (self._wave_progress if self._wave_outward else (1.0 - self._wave_progress))
+        for factor, width, alpha_factor in ((1.0, 14.0, 1.0), (0.8, 9.0, 0.78), (0.62, 5.5, 0.52)):
+            radius = base * factor + travel
+            ring = QColor(color)
+            ring.setAlpha(int(color.alpha() * alpha_factor))
+            pen = QPen(ring, max(1.4, width * self._wave_strength))
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(center, radius, radius)
+
+    def _get_wave_progress(self) -> float:
+        return self._wave_progress
+
+    def _set_wave_progress(self, value: float) -> None:
+        self._wave_progress = float(value)
+        self.update()
+
+    def _get_wave_strength(self) -> float:
+        return self._wave_strength
+
+    def _set_wave_strength(self, value: float) -> None:
+        self._wave_strength = float(value)
+        self.update()
+
+    waveProgress = Property(float, _get_wave_progress, _set_wave_progress)
+    waveStrength = Property(float, _get_wave_strength, _set_wave_strength)
 
 
 class FlowLayout(QLayout):
@@ -262,7 +842,7 @@ class AppDialog(QDialog):
         close_btn = QToolButton()
         close_btn.setProperty("class", "window")
         close_btn.setProperty("role", "close")
-        suffix = "dark" if context.settings.get().theme == "dark" else "light"
+        suffix = "light" if is_light_theme(context.settings.get().theme) else "dark"
         close_btn.setIcon(QIcon(str(context.paths.ui_assets_dir / "icons" / f"window_close_{suffix}.svg")))
         close_btn.setIconSize(QSize(14, 14))
         close_btn.clicked.connect(self.reject)
@@ -303,6 +883,12 @@ class AppDialog(QDialog):
         self._drag_pos = None
         super().mouseReleaseEvent(event)
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Print:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
     def showEvent(self, event: QEvent) -> None:
         _disable_native_window_rounding(self)
         super().showEvent(event)
@@ -317,18 +903,19 @@ class SettingsDialog(AppDialog):
         layout = self.body_layout
 
         form = QFormLayout()
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["dark", "light"])
-        self.language_combo = QComboBox()
+        self.theme_combo = ClickSelectComboBox()
+        for theme_id in ("night", "dark", "oled", "light", "light blue"):
+            self.theme_combo.addItem(theme_id, theme_id)
+        self.language_combo = ClickSelectComboBox()
         self.language_combo.addItems(["ru", "en"])
         self.tg_host_input = QLineEdit()
         self.tg_port_input = QLineEdit()
         self.tg_secret_input = QLineEdit()
-        self.ipset_mode_combo = QComboBox()
+        self.ipset_mode_combo = ClickSelectComboBox()
         self.ipset_mode_combo.addItem("loaded", "loaded")
         self.ipset_mode_combo.addItem("none", "none")
         self.ipset_mode_combo.addItem("any", "any")
-        self.game_mode_combo = QComboBox()
+        self.game_mode_combo = ClickSelectComboBox()
         self.game_mode_combo.addItem(self._t("как в конфиге", "from config"), "auto")
         self.game_mode_combo.addItem(self._t("выключен", "disabled"), "disabled")
         self.game_mode_combo.addItem(self._t("tcp + udp", "tcp + udp"), "all")
@@ -381,7 +968,8 @@ class SettingsDialog(AppDialog):
 
     def _load(self) -> None:
         settings = self.context.settings.get()
-        self.theme_combo.setCurrentText(settings.theme)
+        theme_index = self.theme_combo.findData(settings.theme)
+        self.theme_combo.setCurrentIndex(theme_index if theme_index >= 0 else 0)
         self.language_combo.setCurrentText(settings.language)
         self.tg_host_input.setText(settings.tg_proxy_host)
         self.tg_port_input.setText(str(settings.tg_proxy_port))
@@ -401,7 +989,7 @@ class SettingsDialog(AppDialog):
         except ValueError:
             tg_port = 1443
         return {
-            "theme": self.theme_combo.currentText(),
+            "theme": self.theme_combo.currentData() or "night",
             "active_profile_id": self.context.settings.get().active_profile_id,
             "language": self.language_combo.currentText(),
             "mods_index_url": self.context.settings.get().mods_index_url,
@@ -454,6 +1042,7 @@ class MainWindow(QMainWindow):
         self._component_loading_buttons: dict[str, QPushButton] = {}
         self._component_loading_base_text: dict[str, str] = {}
         self._component_loading_frame = 0
+        self._power_caption_base_text = "OFF"
         self._general_loading_combo: QComboBox | None = None
         self._general_loading_label: QLabel | None = None
         self._general_test_dialog: AppDialog | None = None
@@ -481,6 +1070,11 @@ class MainWindow(QMainWindow):
         self._mods_title_label: QLabel | None = None
         self._mods_subtitle_label: QLabel | None = None
         self._mods_add_btn: QPushButton | None = None
+        self.power_aura: PowerAuraWidget | None = None
+        self.power_caption_text: QLabel | None = None
+        self.power_caption_dots: QLabel | None = None
+        self._power_caption_dots_opacity: QGraphicsOpacityEffect | None = None
+        self._power_caption_dots_blur: QGraphicsBlurEffect | None = None
         self._files_title_label: QLabel | None = None
         self._editor_title_label: QLabel | None = None
         self._logs_title_label: QLabel | None = None
@@ -521,8 +1115,23 @@ class MainWindow(QMainWindow):
         self._backend_tasks: dict[str, str] = {}
         self._component_defs_cache: dict[str, ComponentDefinition] = {}
         self._component_states_cache: dict[str, ComponentState] = {}
+        self._page_blur_effect: QGraphicsBlurEffect | None = None
+        self._page_opacity_effect: QGraphicsOpacityEffect | None = None
+        self._page_transition_overlay: QWidget | None = None
+        self._page_transition_overlay_label: QLabel | None = None
+        self._page_transition_overlay_blur_effect: QGraphicsBlurEffect | None = None
+        self._page_transition_overlay_opacity_effect: QGraphicsOpacityEffect | None = None
+        self._pages_shell: QWidget | None = None
+        self._page_transition_out: QPropertyAnimation | None = None
+        self._page_transition_in: QPropertyAnimation | None = None
+        self._page_transition_target = -1
+        self._page_transition_running = False
+        self._window_opacity_animation: QPropertyAnimation | None = None
+        self._window_fade_pending_action: str | None = None
+        self._nav_highlight_initialized = False
 
         self._icons_dir = self.context.paths.ui_assets_dir / "icons"
+        self._icon_cache: dict[str, QIcon] = {}
         self._nav_items = [
             NavItem("home", "home.svg", self._t("Главная", "Dashboard")),
             NavItem("components", "components.svg", self._t("Компоненты", "Components")),
@@ -531,9 +1140,7 @@ class MainWindow(QMainWindow):
             NavItem("logs", "logs.svg", self._t("Логи", "Logs")),
         ]
 
-        self.resize(860, 520)
-        self.setMinimumSize(820, 480)
-        self.setMaximumSize(980, 680)
+        self.setFixedSize(860, 520)
         self.setWindowTitle("Zapret Hub")
         self.setWindowIcon(self._icon("app.ico"))
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -561,8 +1168,13 @@ class MainWindow(QMainWindow):
         return ru if self.context.settings.get().language == "ru" else en
 
     def _icon(self, filename: str) -> QIcon:
+        cached = self._icon_cache.get(filename)
+        if cached is not None:
+            return cached
         icon_path = self._icons_dir / filename
-        return QIcon(str(icon_path))
+        icon = QIcon(str(icon_path))
+        self._icon_cache[filename] = icon
+        return icon
 
     def _component_defs(self) -> dict[str, ComponentDefinition]:
         if self._component_defs_cache:
@@ -618,6 +1230,10 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         self._sync_window_icon()
         _disable_native_window_rounding(self)
+        self._sync_nav_highlight(animated=self._nav_highlight_initialized)
+        if not self._nav_highlight_initialized:
+            self._nav_highlight_initialized = True
+        self._animate_window_fade(showing=True)
         if self._skip_next_show_focus:
             self._skip_next_show_focus = False
             return
@@ -695,6 +1311,23 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._reposition_loading_overlay()
+        self._reposition_page_transition_overlay()
+        self._sync_power_aura_geometry()
+
+    def _sync_power_aura_geometry(self) -> None:
+        if self.power_aura is None or not hasattr(self, "_power_aura_host") or not hasattr(self, "power_button"):
+            return
+        aura_host = getattr(self, "_power_aura_host", None)
+        power_button = getattr(self, "power_button", None)
+        if aura_host is None or power_button is None:
+            return
+        self.power_aura.setGeometry(aura_host.rect())
+        button_top_left = power_button.mapTo(aura_host, QPoint(0, 0))
+        button_center = QPointF(
+            float(button_top_left.x()) + power_button.width() / 2.0,
+            float(button_top_left.y()) + power_button.height() / 2.0,
+        )
+        self.power_aura.set_center_point(button_center)
 
     def _reposition_loading_overlay(self) -> None:
         overlay = getattr(self, "_loading_overlay", None)
@@ -703,40 +1336,19 @@ class MainWindow(QMainWindow):
             return
         overlay.setGeometry(0, 0, central.width(), central.height())
 
-    def _show_loading_overlay(self, text: str | None = None, *, title: str | None = None, context: str = "general") -> None:
-        overlay = getattr(self, "_loading_overlay", None)
-        label = getattr(self, "_loading_overlay_label", None)
-        title_label = getattr(self, "_loading_overlay_title", None)
-        if overlay is None:
+    def _reposition_page_transition_overlay(self) -> None:
+        overlay = self._page_transition_overlay
+        overlay_label = self._page_transition_overlay_label
+        shell = self._pages_shell
+        if overlay is None or overlay_label is None or shell is None:
             return
-        if self._loading_overlay_fade is not None:
-            self._loading_overlay_fade.stop()
-            self._loading_overlay_fade = None
-        overlay.setGraphicsEffect(None)
+        overlay.setGeometry(shell.rect())
+        overlay_label.setGeometry(overlay.rect())
+
+    def _show_loading_overlay(self, text: str | None = None, *, title: str | None = None, context: str = "general") -> None:
         self._loading_overlay_context = context
-        if title_label is not None and title:
-            title_label.setText(title)
-        if label is not None and text:
-            label.setText(text)
-        self._reposition_loading_overlay()
-        overlay.raise_()
-        overlay.show()
 
     def _hide_loading_overlay(self) -> None:
-        overlay = getattr(self, "_loading_overlay", None)
-        if overlay is None or not overlay.isVisible():
-            return
-        effect = QGraphicsOpacityEffect(overlay)
-        overlay.setGraphicsEffect(effect)
-        effect.setOpacity(1.0)
-        animation = QPropertyAnimation(effect, b"opacity", overlay)
-        animation.setDuration(220)
-        animation.setStartValue(1.0)
-        animation.setEndValue(0.0)
-        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        animation.finished.connect(lambda: (overlay.hide(), overlay.setGraphicsEffect(None)))
-        self._loading_overlay_fade = animation
-        animation.start()
         self._loading_overlay_context = ""
 
     def _build_title_bar(self) -> QWidget:
@@ -828,18 +1440,18 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         side = SidebarPanel()
         side.setObjectName("Sidebar")
-        side.setFixedWidth(72)
+        side.setFixedWidth(78)
         col = QVBoxLayout(side)
         col.setContentsMargins(12, 12, 12, 12)
         col.setSpacing(10)
 
         for idx, item in enumerate(self._nav_items):
-            btn = QToolButton()
+            btn = AnimatedNavButton()
             btn.setProperty("class", "nav")
             btn.setCheckable(True)
             btn.setAutoExclusive(True)
             btn.setIcon(self._icon(item.icon_file))
-            btn.setIconSize(QSize(20, 20))
+            btn.setIconSize(QSize(26, 26))
             btn.setToolTip(item.tooltip)
             btn.clicked.connect(lambda _=False, index=idx: self._switch_page(index))
             self._attach_button_animations(btn)
@@ -849,6 +1461,7 @@ class MainWindow(QMainWindow):
         col.addStretch(1)
         if self._nav_buttons:
             self._nav_buttons[0].setChecked(True)
+        QTimer.singleShot(0, lambda: self._sync_nav_highlight(animated=False))
         return side
 
     def _build_content(self) -> QWidget:
@@ -864,13 +1477,63 @@ class MainWindow(QMainWindow):
         body_layout.setContentsMargins(12, 12, 12, 12)
         body_layout.setSpacing(8)
 
+        pages_shell = QWidget()
+        pages_shell.setObjectName("PagesShell")
+        pages_shell.setProperty("class", "pageCanvas")
+        pages_shell.setAutoFillBackground(False)
+        pages_shell.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        pages_shell_layout = QVBoxLayout(pages_shell)
+        pages_shell_layout.setContentsMargins(0, 0, 0, 0)
+        pages_shell_layout.setSpacing(0)
+        self._pages_shell = pages_shell
+
+        pages_host = QWidget()
+        pages_host.setObjectName("PagesHost")
+        pages_host.setProperty("class", "pageCanvas")
+        pages_host.setAutoFillBackground(False)
+        pages_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        pages_host_layout = QVBoxLayout(pages_host)
+        pages_host_layout.setContentsMargins(0, 0, 0, 0)
+        pages_host_layout.setSpacing(0)
+
         self.pages = QStackedWidget()
+        self.pages.setObjectName("PagesStack")
+        self.pages.setProperty("class", "pageCanvas")
+        self.pages.setAutoFillBackground(False)
+        self.pages.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.pages.addWidget(self._build_dashboard_page())
         self.pages.addWidget(self._build_components_page())
         self.pages.addWidget(self._build_mods_page())
         self.pages.addWidget(self._build_files_page())
         self.pages.addWidget(self._build_logs_page())
-        body_layout.addWidget(self.pages)
+        self._page_blur_effect = QGraphicsBlurEffect(self.pages)
+        self._page_blur_effect.setBlurRadius(0.0)
+        self.pages.setGraphicsEffect(self._page_blur_effect)
+        pages_host_layout.addWidget(self.pages)
+        pages_shell_layout.addWidget(pages_host)
+        self._page_opacity_effect = QGraphicsOpacityEffect(pages_host)
+        self._page_opacity_effect.setOpacity(1.0)
+        pages_host.setGraphicsEffect(self._page_opacity_effect)
+        overlay = QWidget(pages_shell)
+        overlay.setObjectName("PageTransitionOverlay")
+        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("background: transparent;")
+        overlay.hide()
+        overlay_label = QLabel(overlay)
+        overlay_label.setScaledContents(True)
+        overlay_label.setStyleSheet("background: transparent;")
+        overlay_label_blur = QGraphicsBlurEffect(overlay_label)
+        overlay_label_blur.setBlurRadius(0.0)
+        overlay_label.setGraphicsEffect(overlay_label_blur)
+        overlay_opacity = QGraphicsOpacityEffect(overlay)
+        overlay_opacity.setOpacity(1.0)
+        overlay.setGraphicsEffect(overlay_opacity)
+        self._page_transition_overlay = overlay
+        self._page_transition_overlay_label = overlay_label
+        self._page_transition_overlay_blur_effect = overlay_label_blur
+        self._page_transition_overlay_opacity_effect = overlay_opacity
+        self._reposition_page_transition_overlay()
+        body_layout.addWidget(pages_shell)
         layout.addWidget(body, 1)
         return pane
 
@@ -891,7 +1554,7 @@ class MainWindow(QMainWindow):
 
         top, top_layout = self._card()
         top_layout.setContentsMargins(14, 14, 14, 14)
-        title = QLabel(self._t("Быстрое управление", "Quick control"))
+        title = QLabel(self._t("Быстрый доступ", "Quick Access"))
         title.setObjectName("DashboardTitle")
         title.setProperty("class", "title")
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -902,27 +1565,54 @@ class MainWindow(QMainWindow):
 
         # настройка general перенесена в компоненты
         general_label = QLabel(self._t("Конфигурация", "General"))
-        self.general_combo = QComboBox()
+        self.general_combo = ClickSelectComboBox()
         self.general_combo.currentIndexChanged.connect(self._on_general_selected)
         self.general_combo.hide()
 
-        self.power_button = QToolButton()
-        self.power_button.setProperty("class", "power")
-        self.power_button.setIcon(self._icon("power.svg"))
-        self.power_button.setIconSize(QSize(42, 42))
-        self.power_button.clicked.connect(self._toggle_master_runtime)
-        self._attach_button_animations(self.power_button)
-
-        self.power_caption = QLabel("OFF")
-        self.power_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.power_caption.setProperty("class", "title")
         power_block = QWidget()
         power_block.setObjectName("DashboardPowerBlock")
         power_block_layout = QVBoxLayout(power_block)
-        power_block_layout.setContentsMargins(0, 0, 0, 0)
+        power_block_layout.setContentsMargins(0, 0, 18, 0)
         power_block_layout.setSpacing(8)
-        power_block_layout.addWidget(self.power_button, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.power_aura = PowerAuraWidget(top)
+        self.power_aura.set_power_theme(self.context.settings.get().theme)
+        self.power_aura.lower()
+
+        power_stage = QWidget(power_block)
+        power_stage.setFixedSize(224, 188)
+        power_stage.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        power_stage.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        power_stage.setStyleSheet("background: transparent;")
+        self.power_button = AnimatedPowerButton(power_stage)
+        self.power_button.setProperty("class", "power")
+        self.power_button.setIcon(self._icon("power.svg"))
+        self.power_button.setIconSize(QSize(42, 42))
+        self.power_button.setGeometry(46, 28, 132, 132)
+        self.power_button.clicked.connect(self._toggle_master_runtime)
+        self._attach_button_animations(self.power_button)
+        self.power_button.set_power_theme(self.context.settings.get().theme)
+
+        self.power_caption = QWidget()
+        self.power_caption.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.power_caption.setStyleSheet("background: transparent;")
+        self.power_caption.setFixedWidth(power_stage.width())
+        caption_layout = QHBoxLayout(self.power_caption)
+        caption_layout.setContentsMargins(0, 0, 0, 0)
+        caption_layout.setSpacing(0)
+        self.power_caption_text = QLabel("OFF")
+        self.power_caption_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.power_caption_text.setProperty("class", "title")
+        self.power_caption_dots = None
+        self._power_caption_dots_blur = None
+        self._power_caption_dots_opacity = None
+        caption_layout.addWidget(self.power_caption_text, 1, Qt.AlignmentFlag.AlignCenter)
+        power_block_layout.addWidget(power_stage, 0, Qt.AlignmentFlag.AlignHCenter)
         power_block_layout.addWidget(self.power_caption, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._power_aura_host = top
+        self._power_block = power_block
+        self._power_stage = power_stage
+        QTimer.singleShot(0, self._sync_power_aura_geometry)
 
         top_layout.addStretch(1)
         top_layout.addWidget(power_block, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -1146,7 +1836,7 @@ class MainWindow(QMainWindow):
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(16, 12, 16, 12)
             card_layout.setSpacing(8)
-            card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+            card_layout.addStretch(1)
 
             icon_label = QLabel()
             icon_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
@@ -1165,7 +1855,8 @@ class MainWindow(QMainWindow):
             desc_label.setWordWrap(True)
             desc_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             desc_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            card_layout.addWidget(desc_label, 1)
+            card_layout.addWidget(desc_label)
+            card_layout.addStretch(1)
 
             card.clicked.connect(lambda target=kind: self._open_files_mode(target))
             chooser_grid.addWidget(card, index // 2, index % 2)
@@ -1351,19 +2042,24 @@ class MainWindow(QMainWindow):
         self._drag_pos = None
         super().mouseReleaseEvent(event)
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Print:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._window_fade_pending_action is not None:
+            event.ignore()
+            return
         if not self._force_exit:
             if self._should_minimize_to_tray():
                 event.ignore()
-                self.hide()
-                if not self._tray_notifications_shown:
-                    self.tray_icon.showMessage("Zapret Hub", self._t("Приложение свернуто в трей.", "Minimized to tray."), QSystemTrayIcon.MessageIcon.Information, 2200)
-                    self._tray_notifications_shown = True
+                self._animate_window_fade(showing=False, action="tray")
                 return
             self._force_exit = True
-            self.hide()
             event.ignore()
-            QTimer.singleShot(0, self._finalize_exit)
+            self._animate_window_fade(showing=False, action="exit")
             return
         event.accept()
         super().closeEvent(event)
@@ -1411,8 +2107,7 @@ class MainWindow(QMainWindow):
 
     def _exit_application(self) -> None:
         self._force_exit = True
-        self.hide()
-        QTimer.singleShot(0, self._finalize_exit)
+        self._animate_window_fade(showing=False, action="exit")
 
     def _finalize_exit(self) -> None:
         self._shutdown_runtime()
@@ -1490,8 +2185,8 @@ class MainWindow(QMainWindow):
         return False
 
     def _attach_button_animations(self, widget: QWidget) -> None:
-        # анимации кнопок временно выключены: на части систем резалась отрисовка текста
-        return
+        if isinstance(widget, AnimatedNavButton):
+            widget.set_nav_theme(self.context.settings.get().theme)
 
     def _animate_button_opacity(self, widget: QWidget, target: float, duration: int) -> None:
         return
@@ -1506,8 +2201,9 @@ class MainWindow(QMainWindow):
     def _switch_page(self, index: int) -> None:
         for i, btn in enumerate(self._nav_buttons):
             btn.setChecked(i == index)
+        self._sync_nav_highlight(animated=True)
         if index != self.pages.currentIndex():
-            self.pages.setCurrentIndex(index)
+            self._animate_page_switch(index)
         section_map = {
             0: "dashboard",
             1: "components",
@@ -1520,6 +2216,117 @@ class MainWindow(QMainWindow):
             self._mark_dirty(section)
         else:
             self._schedule_dirty_refresh()
+
+    def _sync_nav_highlight(self, *, animated: bool) -> None:
+        sidebar = self.findChild(SidebarPanel, "Sidebar")
+        if sidebar is None:
+            return
+        current = next((btn for btn in self._nav_buttons if btn.isChecked()), None)
+        if current is None:
+            sidebar.clear_highlight()
+            return
+        sidebar.move_highlight(current.geometry(), animated=animated)
+
+    def _animate_page_switch(self, index: int) -> None:
+        if self._page_opacity_effect is None:
+            self.pages.setCurrentIndex(index)
+            return
+        if self._page_transition_running:
+            self._page_transition_target = index
+            return
+        if self.pages.currentIndex() == index:
+            return
+        overlay = self._page_transition_overlay
+        overlay_label = self._page_transition_overlay_label
+        overlay_blur = self._page_transition_overlay_blur_effect
+        overlay_opacity = self._page_transition_overlay_opacity_effect
+        if overlay is None or overlay_label is None or overlay_blur is None or overlay_opacity is None:
+            self.pages.setCurrentIndex(index)
+            return
+        self._page_transition_target = index
+        self._page_transition_running = True
+        snapshot = self.pages.grab()
+        if snapshot.isNull():
+            self._page_transition_running = False
+            self.pages.setCurrentIndex(index)
+            return
+        self._reposition_page_transition_overlay()
+        overlay_label.setPixmap(snapshot)
+        overlay_blur.setBlurRadius(0.0)
+        overlay_opacity.setOpacity(1.0)
+        if self._page_blur_effect is not None:
+            self._page_blur_effect.setBlurRadius(0.0)
+        self._page_opacity_effect.setOpacity(0.0)
+        overlay.show()
+        overlay.raise_()
+        self.pages.setCurrentIndex(index)
+
+        overlay_fade_anim = QPropertyAnimation(overlay_opacity, b"opacity", self)
+        overlay_fade_anim.setDuration(170)
+        overlay_fade_anim.setStartValue(1.0)
+        overlay_fade_anim.setEndValue(0.0)
+        overlay_fade_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        page_fade_anim = QPropertyAnimation(self._page_opacity_effect, b"opacity", self)
+        page_fade_anim.setDuration(190)
+        page_fade_anim.setStartValue(0.0)
+        page_fade_anim.setEndValue(1.0)
+        page_fade_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        group = QParallelAnimationGroup(self)
+        group.addAnimation(overlay_fade_anim)
+        group.addAnimation(page_fade_anim)
+
+        def _finish() -> None:
+            overlay.hide()
+            overlay_label.clear()
+            overlay_blur.setBlurRadius(0.0)
+            overlay_opacity.setOpacity(1.0)
+            self._page_opacity_effect.setOpacity(1.0)
+            self._page_transition_running = False
+            if self._page_transition_target != self.pages.currentIndex():
+                self._animate_page_switch(self._page_transition_target)
+
+        group.finished.connect(_finish)
+        self._page_transition_out = overlay_fade_anim
+        self._page_transition_in = page_fade_anim
+        group.start()
+
+    def _animate_window_fade(self, *, showing: bool, action: str | None = None) -> None:
+        if self._window_opacity_animation is not None:
+            self._window_opacity_animation.stop()
+        animation = QPropertyAnimation(self, QByteArray(b"windowOpacity"), self)
+        animation.setDuration(170 if showing else 130)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic if showing else QEasingCurve.Type.InCubic)
+        if showing:
+            self.setWindowOpacity(0.0)
+            animation.setStartValue(0.0)
+            animation.setEndValue(1.0)
+        else:
+            self._window_fade_pending_action = action
+            animation.setStartValue(float(self.windowOpacity()))
+            animation.setEndValue(0.0)
+
+            def _finish_hide() -> None:
+                pending = self._window_fade_pending_action
+                self._window_fade_pending_action = None
+                if pending == "tray":
+                    self.setWindowOpacity(1.0)
+                    self.hide()
+                    if not self._tray_notifications_shown:
+                        self.tray_icon.showMessage("Zapret Hub", self._t("Приложение свернуто в трей.", "Minimized to tray."), QSystemTrayIcon.MessageIcon.Information, 2200)
+                        self._tray_notifications_shown = True
+                elif pending == "minimize":
+                    self.showMinimized()
+                    QTimer.singleShot(0, lambda: self.setWindowOpacity(1.0))
+                elif pending == "exit":
+                    self.setWindowOpacity(1.0)
+                    self.hide()
+                    QTimer.singleShot(0, self._finalize_exit)
+                else:
+                    self.setWindowOpacity(1.0)
+
+            animation.finished.connect(_finish_hide)
+        self._window_opacity_animation = animation
+        animation.start()
 
 
     def _open_settings_dialog(self) -> None:
@@ -1643,27 +2450,35 @@ class MainWindow(QMainWindow):
         check = str((self._icons_dir / "check.svg").resolve())
         self.setStyleSheet(build_stylesheet(theme, chevron_icon=chevron, check_icon=check))
         self._update_power_icon()
+        if isinstance(self.power_button, AnimatedPowerButton):
+            self.power_button.set_power_theme(theme)
+        if self.power_aura is not None:
+            self.power_aura.set_power_theme(theme)
         sidebar = self.findChild(SidebarPanel, "Sidebar")
         if sidebar is not None:
             sidebar.set_theme(theme)
+        for btn in self._nav_buttons:
+            if isinstance(btn, AnimatedNavButton):
+                btn.set_nav_theme(theme)
+        self._sync_nav_highlight(animated=False)
         self._apply_titlebar_icons(theme)
 
     def _apply_titlebar_icons(self, theme: str) -> None:
         if self._min_btn is None or self._close_btn is None:
             return
-        suffix = "dark" if theme == "dark" else "light"
+        suffix = "light" if is_light_theme(theme) else "dark"
         self._min_btn.setIcon(self._icon(f"window_min_{suffix}.svg"))
         self._close_btn.setIcon(self._icon(f"window_close_{suffix}.svg"))
 
     def _theme_status_icon_name(self) -> str:
-        return "status_sun.svg" if self.context.settings.get().theme == "light" else "status_theme.svg"
+        return "status_sun.svg" if is_light_theme(self.context.settings.get().theme) else "status_theme.svg"
 
     def _update_power_icon(self) -> None:
         if not hasattr(self, "power_button") or self.power_button is None:
             return
         theme = self.context.settings.get().theme
         state = str(self.power_button.property("state") or "off")
-        if self._toggle_in_progress or state != "off" or theme == "dark":
+        if self._toggle_in_progress or state != "off" or not is_light_theme(theme):
             power_icon = "power_dark.svg"
         else:
             power_icon = "power_light.svg"
@@ -1688,7 +2503,7 @@ class MainWindow(QMainWindow):
             self._settings_btn.setToolTip(self._t("Настройки", "Settings"))
 
         if self._dashboard_title_label is not None:
-            self._dashboard_title_label.setText(self._t("Быстрое управление", "Quick control"))
+            self._dashboard_title_label.setText(self._t("Быстрый доступ", "Quick Access"))
         if self._components_title_label is not None:
             self._components_title_label.setText(self._t("Компоненты", "Components"))
         if self._mods_title_label is not None:
@@ -1854,8 +2669,102 @@ class MainWindow(QMainWindow):
         if not self._component_loading_buttons and self._general_loading_label is None:
             self._component_loading_timer.stop()
 
+    def _animate_label_text(self, label: QLabel, text: str, *, duration: int = 170) -> None:
+        try:
+            if label.text() == text:
+                return
+            parent = label.parentWidget()
+            if parent is None:
+                label.setText(text)
+                return
+            old = QLabel(parent)
+            old.setText(label.text())
+            old.setGeometry(label.geometry())
+            old.setFont(label.font())
+            old.setAlignment(label.alignment())
+            old.setObjectName(label.objectName())
+            old.setProperty("class", label.property("class"))
+            old.setStyleSheet("background: transparent;")
+            old.show()
+            old.raise_()
+            old.style().unpolish(old)
+            old.style().polish(old)
+            old_opacity = QGraphicsOpacityEffect(old)
+            old_opacity.setOpacity(1.0)
+            old.setGraphicsEffect(old_opacity)
+            fade_old = QPropertyAnimation(old_opacity, b"opacity", self)
+            fade_old.setDuration(duration)
+            fade_old.setStartValue(1.0)
+            fade_old.setEndValue(0.0)
+            fade_old.setEasingCurve(QEasingCurve.Type.InCubic)
+            blur_effect = getattr(label, "_text_blur_effect", None)
+            if blur_effect is None:
+                blur_effect = QGraphicsBlurEffect(label)
+                blur_effect.setBlurRadius(0.0)
+                label.setGraphicsEffect(blur_effect)
+                setattr(label, "_text_blur_effect", blur_effect)
+            label.setText(text)
+            blur_effect.setBlurRadius(7.0)
+            blur_anim = QPropertyAnimation(blur_effect, b"blurRadius", self)
+            blur_anim.setDuration(duration + 40)
+            blur_anim.setStartValue(7.0)
+            blur_anim.setEndValue(0.0)
+            blur_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            group = QParallelAnimationGroup(self)
+            group.addAnimation(fade_old)
+            group.addAnimation(blur_anim)
+            group.finished.connect(old.deleteLater)
+            group.start()
+        except Exception:
+            label.setText(text)
+
+    def _animate_caption_dots(self, dots: str, *, duration: int = 150) -> None:
+        if self.power_caption_dots is None:
+            return
+        if self.power_caption_dots.text() == dots:
+            return
+        if self._power_caption_dots_opacity is None or self._power_caption_dots_blur is None:
+            self.power_caption_dots.setText(dots)
+            return
+        fade_out = QPropertyAnimation(self._power_caption_dots_opacity, b"opacity", self)
+        fade_out.setDuration(max(70, duration // 2))
+        fade_out.setStartValue(float(self._power_caption_dots_opacity.opacity()))
+        fade_out.setEndValue(0.0)
+        fade_out.setEasingCurve(QEasingCurve.Type.InCubic)
+        blur_out = QPropertyAnimation(self._power_caption_dots_blur, b"blurRadius", self)
+        blur_out.setDuration(max(70, duration // 2))
+        blur_out.setStartValue(float(self._power_caption_dots_blur.blurRadius()))
+        blur_out.setEndValue(6.0)
+        blur_out.setEasingCurve(QEasingCurve.Type.InCubic)
+        out_group = QParallelAnimationGroup(self)
+        out_group.addAnimation(fade_out)
+        out_group.addAnimation(blur_out)
+
+        def _show_new() -> None:
+            if self.power_caption_dots is None or self._power_caption_dots_opacity is None or self._power_caption_dots_blur is None:
+                return
+            self.power_caption_dots.setText(dots)
+            self._power_caption_dots_blur.setBlurRadius(6.0)
+            fade_in = QPropertyAnimation(self._power_caption_dots_opacity, b"opacity", self)
+            fade_in.setDuration(duration)
+            fade_in.setStartValue(0.0)
+            fade_in.setEndValue(1.0)
+            fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+            blur_in = QPropertyAnimation(self._power_caption_dots_blur, b"blurRadius", self)
+            blur_in.setDuration(duration)
+            blur_in.setStartValue(6.0)
+            blur_in.setEndValue(0.0)
+            blur_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+            in_group = QParallelAnimationGroup(self)
+            in_group.addAnimation(fade_in)
+            in_group.addAnimation(blur_in)
+            in_group.start()
+
+        out_group.finished.connect(_show_new)
+        out_group.start()
+
     def _advance_component_loading(self) -> None:
-        frames = [".", "..", "..."]
+        frames = ["", ".", "..", "...", "..", "."]
         frame = frames[self._component_loading_frame % len(frames)]
         self._component_loading_frame += 1
         for button in list(self._component_loading_buttons.values()):
@@ -1872,7 +2781,7 @@ class MainWindow(QMainWindow):
             self._component_loading_timer.stop()
 
     def _minimize_window_native(self) -> None:
-        self.showMinimized()
+        self._animate_window_fade(showing=False, action="minimize")
 
     def _selected_component_id(self) -> str | None:
         item = self.components_list.currentItem()
@@ -2006,6 +2915,10 @@ class MainWindow(QMainWindow):
         self._loading_action = "disconnect" if active_ids and running_ids == set(active_ids) else "connect"
         self._toggle_in_progress = True
         self.power_button.setEnabled(False)
+        if isinstance(self.power_button, AnimatedPowerButton):
+            self.power_button.play_wave(outward=self._loading_action == "connect")
+        if self.power_aura is not None:
+            self.power_aura.play_wave(outward=self._loading_action == "connect")
         self._loading_frame = 0
         self._loading_timer.start()
         self._advance_loading_caption()
@@ -2043,12 +2956,20 @@ class MainWindow(QMainWindow):
         if not self._toggle_in_progress:
             return
         base = self._t("Подключение", "Connecting") if self._loading_action == "connect" else self._t("Отключение", "Disconnecting")
-        frames = [base, f"{base}.", f"{base}..", f"{base}..."]
-        self.power_caption.setText(frames[self._loading_frame % len(frames)])
+        dots_frames = ["", ".", "..", "...", "..", "."]
+        full_text = f"{base}{dots_frames[self._loading_frame % len(dots_frames)]}"
+        if self.power_caption_dots is not None:
+            self.power_caption_dots.setText("")
+            self.power_caption_dots.hide()
+        if self.power_caption_text is not None:
+            self.power_caption_text.setText(full_text)
+        self._power_caption_base_text = base
         self._loading_frame += 1
-        self.power_button.setProperty("state", "on")
-        self.power_button.style().unpolish(self.power_button)
-        self.power_button.style().polish(self.power_button)
+        self.power_button.setProperty("state", "loading")
+        if isinstance(self.power_button, AnimatedPowerButton):
+            self.power_button.set_loading_state(True, animate=True)
+        if self.power_aura is not None:
+            self.power_aura.set_idle_pulse_enabled(False)
         self._update_power_icon()
 
     def _start_selected_component(self) -> None:
@@ -2458,17 +3379,35 @@ class MainWindow(QMainWindow):
         self._refresh_dirty_sections.clear()
 
         if "dashboard" in dirty:
-            self.refresh_dashboard()
+            try:
+                self.refresh_dashboard()
+            except Exception:
+                pass
         if "tray" in dirty:
-            self._rebuild_tray_menu()
+            try:
+                self._rebuild_tray_menu()
+            except Exception:
+                pass
         if "components" in dirty:
-            self.refresh_components()
+            try:
+                self.refresh_components()
+            except Exception:
+                pass
         if "mods" in dirty:
-            self.refresh_mods()
+            try:
+                self.refresh_mods()
+            except Exception:
+                pass
         if "files" in dirty:
-            self._request_page_refresh("files")
+            try:
+                self._request_page_refresh("files")
+            except Exception:
+                pass
         if "logs" in dirty:
-            self._request_page_refresh("logs")
+            try:
+                self._request_page_refresh("logs")
+            except Exception:
+                pass
 
         if self._initial_refresh_pending:
             self._initial_refresh_pending = False
@@ -2553,16 +3492,26 @@ class MainWindow(QMainWindow):
         fully_running = bool(active_ids) and set(active_ids) == running_ids
 
         self.power_button.setProperty("state", "on" if fully_running else "off")
-        self.power_button.style().unpolish(self.power_button)
-        self.power_button.style().polish(self.power_button)
         self._update_power_icon()
+        if isinstance(self.power_button, AnimatedPowerButton):
+            self.power_button.set_active_state(fully_running, animate=True)
+        if self.power_aura is not None:
+            self.power_aura.set_idle_pulse_enabled(fully_running and not self._toggle_in_progress)
+        if self.power_caption_dots is not None:
+            self.power_caption_dots.setText("")
+            self.power_caption_dots.hide()
+        self._power_caption_base_text = ""
         if not active_ids:
-            self.power_caption.setText(self._t("НЕТ КОМПОНЕНТОВ", "NO COMPONENTS"))
+            if self.power_caption_text is not None:
+                self.power_caption_text.setText(self._t("НЕТ КОМПОНЕНТОВ", "NO COMPONENTS"))
+                self._power_caption_base_text = self._t("НЕТ КОМПОНЕНТОВ", "NO COMPONENTS")
         else:
-            self.power_caption.setText(self._t("ВКЛ", "ON") if fully_running else (self._t("ЧАСТИЧНО", "PARTIAL") if any_running else self._t("ВЫКЛ", "OFF")))
+            target_caption = self._t("ВКЛ", "ON") if fully_running else (self._t("ЧАСТИЧНО", "PARTIAL") if any_running else self._t("ВЫКЛ", "OFF"))
+            if self.power_caption_text is not None:
+                self.power_caption_text.setText(target_caption)
+                self._power_caption_base_text = target_caption
 
         enabled_mods = list(settings.enabled_mod_ids or [])
-        merge_state = self.context.merge.get_state()
 
         self._set_badge("app", self._t("Работает", "Running") if fully_running else (self._t("Частично", "Partial") if any_running else self._t("Ожидание", "Idle")), "status_ok.svg" if fully_running else ("status_warn.svg" if any_running else "status_off.svg"))
         zapret_text, zapret_icon = self._component_badge_state(components.get("zapret"), zapret_state, any_running)
@@ -2572,6 +3521,10 @@ class MainWindow(QMainWindow):
         self._set_badge("mods", f"{len(enabled_mods)} {self._t('Активно', 'Active')}", "status_mod.svg")
         self._set_badge("theme", settings.theme.title(), self._theme_status_icon_name())
 
+        try:
+            merge_state = self.context.merge.get_state()
+        except Exception:
+            merge_state = None
         if merge_state is None and enabled_mods:
             QTimer.singleShot(0, self._ensure_merge_runtime_ready)
 
@@ -3203,7 +4156,7 @@ class MainWindow(QMainWindow):
                 config_label = QLabel(self._t("Конфигурация Zapret", "Zapret Configuration"))
                 config_label.setProperty("class", "muted")
                 card_layout.addWidget(config_label)
-                config_combo = QComboBox()
+                config_combo = ClickSelectComboBox()
                 config_status = QLabel("")
                 config_status.setProperty("class", "muted")
                 config_status.hide()

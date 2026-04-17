@@ -5,7 +5,7 @@ import multiprocessing
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -58,12 +58,12 @@ def _single_instance_key() -> str:
     return f"zapret_hub_{digest}"
 
 
-def _notify_existing_instance(server_name: str) -> bool:
+def _notify_existing_instance(server_name: str, message: bytes = b"SHOW") -> bool:
     socket = QLocalSocket()
     socket.connectToServer(server_name)
     if not socket.waitForConnected(220):
         return False
-    socket.write(b"SHOW")
+    socket.write(message)
     socket.flush()
     socket.waitForBytesWritten(220)
     socket.disconnectFromServer()
@@ -132,62 +132,69 @@ def run(argv: list[str] | None = None) -> int:
     if icon_path is not None:
         app.setWindowIcon(QIcon(str(icon_path)))
     instance_key = _single_instance_key()
-    if _notify_existing_instance(instance_key):
+    notify_message = b"PING" if known.autostart_launch else b"SHOW"
+    if _notify_existing_instance(instance_key, notify_message):
         return 0
 
     bootstrap_thread = _BootstrapThread()
     app._bootstrap_thread = bootstrap_thread  # type: ignore[attr-defined]
 
-    def _finish_bootstrap(context: object) -> None:
-        from zapret_hub.ui.main_window import MainWindow
-        from zapret_hub.services.backend_worker import BackendWorkerClient
+    class _BootstrapBridge(QObject):
+        @Slot(object)
+        def finish_bootstrap(self, context: object) -> None:
+            from zapret_hub.ui.main_window import MainWindow
+            from zapret_hub.services.backend_worker import BackendWorkerClient
 
-        settings = context.settings.get()
-        launch_hidden = bool(known.autostart_launch and settings.start_in_tray)
-        context.backend = BackendWorkerClient(app)
-        window = MainWindow(context, launch_hidden=launch_hidden)
-        server = _create_single_instance_server(instance_key)
-        if server is not None:
-            def _on_new_connection() -> None:
-                while server.hasPendingConnections():
-                    client = server.nextPendingConnection()
-                    if client is not None:
-                        client.readAll()
-                        client.disconnectFromServer()
-                window.restore_from_external_launch()
-
-            server.newConnection.connect(_on_new_connection)
-            app._single_instance_server = server  # type: ignore[attr-defined]
-            app._single_instance_window = window  # type: ignore[attr-defined]
-
-        def _cleanup_before_quit() -> None:
-            try:
-                if context.backend is not None:
-                    context.backend.stop()
-                else:
-                    context.processes.stop_all()
-            except Exception:
-                pass
+            settings = context.settings.get()
+            launch_hidden = bool(known.autostart_launch and settings.start_in_tray)
+            context.backend = BackendWorkerClient(app)
+            window = MainWindow(context, launch_hidden=launch_hidden)
+            server = _create_single_instance_server(instance_key)
             if server is not None:
+                def _on_new_connection() -> None:
+                    while server.hasPendingConnections():
+                        client = server.nextPendingConnection()
+                        if client is not None:
+                            payload = bytes(client.readAll()).strip()
+                            client.disconnectFromServer()
+                            if payload == b"SHOW":
+                                window.restore_from_external_launch()
+
+                server.newConnection.connect(_on_new_connection)
+                app._single_instance_server = server  # type: ignore[attr-defined]
+                app._single_instance_window = window  # type: ignore[attr-defined]
+
+            def _cleanup_before_quit() -> None:
                 try:
-                    server.close()
+                    if context.backend is not None:
+                        context.backend.stop()
+                    else:
+                        context.processes.stop_all()
                 except Exception:
                     pass
+                if server is not None:
+                    try:
+                        server.close()
+                    except Exception:
+                        pass
 
-        app.aboutToQuit.connect(_cleanup_before_quit)
-        context.autostart.set_enabled(bool(settings.autostart_windows))
-        if known.autostart_launch and settings.auto_run_components:
-            QTimer.singleShot(0, window.start_enabled_components_async)
-        if launch_hidden:
-            window.hide()
-        else:
-            window.show()
+            app.aboutToQuit.connect(_cleanup_before_quit)
+            context.autostart.set_enabled(bool(settings.autostart_windows))
+            if known.autostart_launch and settings.auto_run_components:
+                QTimer.singleShot(0, window.start_enabled_components_async)
+            if launch_hidden:
+                window.hide()
+            else:
+                window.show()
 
-    def _fail_bootstrap(message: str) -> None:
-        QMessageBox.critical(None, "Zapret Hub", message or "Failed to prepare the application")
-        app.quit()
+        @Slot(str)
+        def fail_bootstrap(self, message: str) -> None:
+            QMessageBox.critical(None, "Zapret Hub", message or "Failed to prepare the application")
+            app.quit()
 
-    bootstrap_thread.ready.connect(_finish_bootstrap)
-    bootstrap_thread.failed.connect(_fail_bootstrap)
+    bootstrap_bridge = _BootstrapBridge()
+    app._bootstrap_bridge = bootstrap_bridge  # type: ignore[attr-defined]
+    bootstrap_thread.ready.connect(bootstrap_bridge.finish_bootstrap, Qt.ConnectionType.QueuedConnection)
+    bootstrap_thread.failed.connect(bootstrap_bridge.fail_bootstrap, Qt.ConnectionType.QueuedConnection)
     bootstrap_thread.start()
     return app.exec()

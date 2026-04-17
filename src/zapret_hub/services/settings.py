@@ -26,7 +26,11 @@ class SettingsManager:
             settings.language = self._detect_system_language()
             changed = True
 
-        if raw.get("theme") not in ("dark", "light"):
+        if raw.get("theme") == "midnight":
+            settings.theme = "night"
+            changed = True
+
+        if raw.get("theme") not in ("night", "midnight", "dark", "oled", "light", "light blue"):
             settings.theme = self._detect_system_theme()
             changed = True
 

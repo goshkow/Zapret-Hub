@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 
+LIGHT_THEMES = {"light", "light blue"}
+
+
+def is_light_theme(theme: str) -> bool:
+    return theme in LIGHT_THEMES
+
+
 def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -> str:
-    dark = """
+    night = """
     QWidget {
         background: #0f1420;
         color: #d9e0f0;
@@ -12,7 +19,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     #WindowShell {
         background: transparent;
     }
-    QStackedWidget, QStackedWidget > QWidget {
+    QStackedWidget, QStackedWidget > QWidget, QWidget#PagesShell, QStackedWidget#PagesStack {
         background: transparent;
     }
     QWidget[class="pageRoot"], QWidget[class="pageCanvas"] {
@@ -158,10 +165,10 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         border: none;
     }
     QToolButton[class="nav"] {
-        min-width: 44px;
-        min-height: 44px;
-        max-width: 44px;
-        max-height: 44px;
+        min-width: 46px;
+        min-height: 46px;
+        max-width: 46px;
+        max-height: 46px;
         border-radius: 12px;
         border: 1px solid transparent;
         background: transparent;
@@ -468,7 +475,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     #WindowShell {
         background: transparent;
     }
-    QStackedWidget, QStackedWidget > QWidget {
+    QStackedWidget, QStackedWidget > QWidget, QWidget#PagesShell, QStackedWidget#PagesStack {
         background: transparent;
     }
     QWidget[class="pageRoot"], QWidget[class="pageCanvas"] {
@@ -497,7 +504,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         border: none;
     }
     #ContentSurface {
-        background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #e8eef9, stop:0.66 #f2f6fd, stop:1 #f8fbff);
+        background: #f4f7fc;
         border-top: 1px solid #d2ddeb;
         border-left: 1px solid #d2ddeb;
         border-top-left-radius: 18px;
@@ -532,12 +539,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         border-radius: 16px;
     }
     QFrame[class="card"] {
-        background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #f3f7ff, stop:0.68 #fbfdff, stop:1 #ffffff);
+        background: #ffffff;
         border: 1px solid #d2ddeb;
         border-radius: 16px;
     }
     QFrame[class="modHero"] {
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffffff, stop:1 #eef4ff);
+        background: #ffffff;
         border: 1px solid #cad7ea;
         border-radius: 16px;
     }
@@ -614,10 +621,10 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         border: none;
     }
     QToolButton[class="nav"] {
-        min-width: 44px;
-        min-height: 44px;
-        max-width: 44px;
-        max-height: 44px;
+        min-width: 46px;
+        min-height: 46px;
+        max-width: 46px;
+        max-height: 46px;
         border-radius: 12px;
         border: 1px solid transparent;
         background: transparent;
@@ -683,12 +690,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         height: 0px;
     }
     QFrame[class="fileModeCard"] {
-        background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #f3f7ff, stop:1 #ffffff);
+        background: #ffffff;
         border: 1px solid #cad8ee;
         border-radius: 14px;
     }
     QFrame[class="fileModeCard"][hovered="true"] {
-        background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #e8f0ff, stop:1 #ffffff);
+        background: #f2f7ff;
         border: 1px solid #8ea9df;
     }
     QPushButton[class="primary"] {
@@ -712,19 +719,19 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         max-width: 132px;
         max-height: 132px;
         border-radius: 66px;
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #7b86ff, stop:0.48 #6471f8, stop:1 #4c58d8);
+        background: #6471f8;
         border: 2px solid #7b87ff;
         padding: 0px;
     }
     QToolButton[class="power"][state="off"] {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f5f8ff, stop:0.55 #e8f0ff, stop:1 #dce6fb);
+        background: #e6eef9;
         border: 2px solid #bfd2f0;
     }
     QToolButton[class="power"]:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #8a95ff, stop:0.48 #717cff, stop:1 #5863ea);
+        background: #7480ff;
     }
     QToolButton[class="power"][state="off"]:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:0.55 #eef4ff, stop:1 #e2ebff);
+        background: #edf3fb;
     }
     QLineEdit, QComboBox, QTextEdit, QTableWidget {
         background: #ffffff;
@@ -922,6 +929,123 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     if check_icon:
         normalized_check = check_icon.replace("\\", "/")
         check_rule = f'image: url("{normalized_check}");'
-    style = dark if theme == "dark" else light
+    dark = (
+        night
+        .replace("#0f1420", "#151618")
+        .replace("#101725", "#181a1d")
+        .replace("#101726", "#181a1d")
+        .replace("qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #0d1320, stop:0.62 #101827, stop:1 #172339)", "#15171a")
+        .replace("qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #131d30, stop:0.68 #162238, stop:1 #1a2842)", "#1a1c20")
+        .replace("qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #17253d, stop:1 #131d30)", "#181a1e")
+        .replace("#141f32", "#181b1f")
+        .replace("#151f33", "#181b1f")
+        .replace("#1b2b45", "#20242a")
+        .replace("#24304a", "#2e333b")
+        .replace("#243550", "#31363f")
+        .replace("#2a436a", "#373d46")
+        .replace("#284061", "#363c45")
+        .replace("#35527d", "#474d57")
+        .replace("#21324f", "#23272d")
+        .replace("#39547d", "#474e58")
+        .replace("#2f8f5d", "#4d8b67")
+        .replace("#5070a4", "#5c6777")
+        .replace("#4b617f", "#515865")
+        .replace("#18253d", "#1e2126")
+        .replace("#2b446a", "#353a42")
+        .replace("#111a2b", "#131518")
+        .replace("#2f4468", "#363b45")
+        .replace("#304463", "#3a4048")
+        .replace("#4a628c", "#565d69")
+        .replace("#5865f2", "#6366f1")
+        .replace("#6773ff", "#7c85ff")
+        .replace("#243552", "#272b33")
+        .replace("#35517f", "#424751")
+        .replace("#2d4268", "#31363f")
+        .replace("#1d2940", "#202329")
+        .replace("#141f32", "#181b1f")
+        .replace("#2b3f63", "#2b3038")
+        .replace("#1e2a43", "rgba(255, 255, 255, 0.02)")
+        .replace("#2a3d61", "rgba(255, 255, 255, 0.045)")
+        .replace("#4f73b3", "#5d6572")
+        .replace("rgba(83, 108, 148, 0.25)", "rgba(255, 255, 255, 0.06)")
+        .replace("qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #141e31, stop:1 #1a2942)", "#191c20")
+        .replace("qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #1a2842, stop:1 #203252)", "#20242a")
+        .replace("#2e466d", "#363b45")
+        .replace("#8ea9df", "#596171")
+        .replace("qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #324a73, stop:0.55 #283b5c, stop:1 #1d2b44)", "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5a5f67, stop:0.55 #484d55, stop:1 #373c43)")
+        .replace("qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3a5685, stop:0.55 #30486f, stop:1 #223451)", "qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #676d76, stop:0.55 #525861, stop:1 #3e434a)")
+        .replace("background: #6366f1;", "background: #1f2329;")
+        .replace("border-color: #7c85ff;", "border-color: #6b7280;")
+        .replace("background: #272b33;", "background: #171a1f;")
+        .replace("border: 1px solid #424751;", "border: 1px solid #5f6e8a;")
+        .replace("background: #31363f;", "background: #1d2127;")
+    )
+
+    oled = (
+        dark
+        .replace("#151618", "#0a0b0d")
+        .replace("#181a1d", "#0d0f12")
+        .replace("#15171a", "#101215")
+        .replace("#1a1c20", "#13161a")
+        .replace("#181a1e", "#121418")
+        .replace("#181b1f", "#111318")
+        .replace("#20242a", "#171a20")
+        .replace("#2e333b", "#232730")
+        .replace("#31363f", "#252a33")
+        .replace("#373d46", "#2a2f38")
+        .replace("#363c45", "#292d36")
+        .replace("#474d57", "#393e48")
+        .replace("#131518", "#0c0e11")
+        .replace("#363b45", "#272b34")
+        .replace("#2b3038", "#20242c")
+        .replace("rgba(255, 255, 255, 0.035)", "rgba(255, 255, 255, 0.025)")
+        .replace("rgba(255, 255, 255, 0.075)", "rgba(255, 255, 255, 0.055)")
+        .replace("#1f2329", "#181b20")
+        .replace("#1d2127", "#16191e")
+        .replace("#6b7280", "#646c79")
+    )
+
+    light_blue = (
+        light
+        .replace("#eef2f8", "#e7f2ff")
+        .replace("#f3f6fd", "#edf6ff")
+        .replace("#f5f7fb", "#eaf3ff")
+        .replace("#ffffff", "#fbfdff", 1)
+        .replace("#ffffff", "#f9fcff", 1)
+        .replace("#ffffff", "#f7fbff", 1)
+        .replace("#f0f4fb", "#e3f0ff")
+        .replace("background: #f4f7fc;", "background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #e4f0ff, stop:0.64 #f0f8ff, stop:1 #fbfdff);", 1)
+        .replace("background: #ffffff;\n        border: 1px solid #d2ddeb;\n        border-radius: 16px;", "background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #eaf3ff, stop:0.68 #f7fbff, stop:1 #ffffff);\n        border: 1px solid #bfd4f3;\n        border-radius: 16px;", 1)
+        .replace("background: #ffffff;\n        border: 1px solid #cad7ea;\n        border-radius: 16px;", "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #fafdff, stop:1 #e9f4ff);\n        border: 1px solid #b9d2f4;\n        border-radius: 16px;", 1)
+        .replace("background: #ffffff;\n        border: 1px solid #cad8ee;\n        border-radius: 14px;", "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #eef6ff, stop:1 #fbfdff);\n        border: 1px solid #bdd5f7;\n        border-radius: 14px;", 1)
+        .replace("background: #f2f7ff;", "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #dcecff, stop:1 #fafdff);", 1)
+        .replace("background: #ffffff;\n        border: 1px solid #cedbea;\n        border-radius: 10px;\n        padding: 6px;\n        selection-background-color: #bfd2f0;", "background: #f6fbff;\n        border: 1px solid #bfd6f6;\n        border-radius: 10px;\n        padding: 6px;\n        selection-background-color: #b8d6ff;")
+        .replace("background: #5865f2;", "background: #5a95ff;")
+        .replace("border-color: #6773ff;", "border-color: #7aaeff;")
+        .replace("background: #6d79ff;", "background: #6fa7ff;")
+        .replace("background: #dfe9f7;", "background: #dcecff;")
+        .replace("background: #e6eef9;", "background: #dbeaff;")
+        .replace("background: #edf3fb;", "background: #e7f2ff;")
+        .replace("border: 2px solid #bfd2f0;", "border: 2px solid #b1ccf7;")
+        .replace("#d2ddeb", "#bfd4f3")
+        .replace("#bfd2f0", "#b1ccf7")
+        .replace("#dae7ff", "#d3e7ff")
+        .replace("#e7efff", "#e3f0ff")
+        .replace("#edf3ff", "#eaf4ff")
+        .replace("#f5f8ff", "#eef6ff")
+        .replace("#5f6cf7", "#5a95ff")
+        .replace("#7480ff", "#76a7ff")
+        .replace("#6773ff", "#78aaff")
+    )
+
+    styles = {
+        "night": night,
+        "midnight": night,
+        "dark": dark,
+        "oled": oled,
+        "light": light,
+        "light blue": light_blue,
+    }
+    style = styles.get(theme, dark)
     style = style.replace("__COMBO_ARROW__", arrow_rule)
     return style.replace("__CHECK_ICON__", check_rule)

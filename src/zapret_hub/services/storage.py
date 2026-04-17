@@ -146,7 +146,7 @@ class StorageManager:
             "name": "Unified",
             "description": "Позволяет обойти блокировки самых популярных сервисов, включая игровые сервисы, социальные сети и другие платформы.",
             "author": "goshkow",
-            "version": "1.2.0",
+            "version": "1.3.0",
             "source_url": "bundled://unified-by-goshkow",
             "category": "gaming",
             "tags": ["gaming", "social", "cloudflare", "ubisoft", "arc-raiders"],
@@ -167,7 +167,7 @@ class StorageManager:
             ),
             None,
         )
-        desired_version = str(default_mod_meta.get("version", "1.2.0"))
+        desired_version = str(default_mod_meta.get("version", "1.3.0"))
         default_bundle = self._ensure_default_bundled_mod(
             default_mod_id,
             default_mod_meta,
@@ -265,7 +265,7 @@ class StorageManager:
         )
         return {
             "id": mod_id,
-            "version": str(meta.get("version", "1.2.0")),
+            "version": str(meta.get("version", "1.3.0")),
             "path": str(target_dir),
             "enabled": False,
             "name": str(meta.get("name", "")),
