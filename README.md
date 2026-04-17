@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🚀 Zapret Hub
+# 🚀 [Zapret Hub](https://github.com/goshkow/Zapret-Hub)
 
 **Zapret Hub** - Windows-приложение для **удобного управления** `zapret` и `tg-ws-proxy` из **одного интерфейса**. 
 
