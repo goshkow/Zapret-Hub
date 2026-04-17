@@ -52,11 +52,10 @@
 🔹 Собирает runtime в `merged_runtime/`  
 🔹 Импорт general/списков из GitHub/ZIP  
 
-
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/mods-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="assets/mods-light.png">
-  <img alt="Меню модификаций" src="assets/mods-dark.png">
+  <img alt="Меню модификаций" src="assets/mods-dark.png" width="75%">
 </picture>
 
 ## 💻 Требования
