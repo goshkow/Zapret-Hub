@@ -6,7 +6,11 @@
 
 **Для обычных пользователей** - без bat-файлов, поиска папок и правки конфигов в блокноте!
 
-<img width="1085" height="659" alt="Главная страница" src="https://github.com/user-attachments/assets/c75412f5-3438-4a9f-8133-e9fc74d3e1ba" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/banner-light.png">
+  <img alt="Zapret Hub banner" src="assets/banner-dark.png">
+</picture>
 
 **Автор**: goshkow • [GitHub](https://github.com/goshkow/Zapret-Hub)
 
@@ -48,7 +52,12 @@
 🔹 Собирает runtime в `merged_runtime/`  
 🔹 Импорт general/списков из GitHub/ZIP  
 
-<img width="1075" height="653" alt="Модификации" src="https://github.com/user-attachments/assets/f0d51735-c6ab-45fa-97da-83c558030110" />
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/mods-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/mods-light.png">
+  <img alt="Меню модификаций" src="assets/mods-dark.png">
+</picture>
 
 ## 💻 Требования
 
