@@ -57,7 +57,7 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
     if action == "toggle_master_runtime":
         components = context.processes.list_components()
         states = {item.component_id: item for item in context.processes.list_states()}
-        active_ids = [c.id for c in components if c.id in ("zapret", "tg-ws-proxy") and c.enabled]
+        active_ids = [c.id for c in components if c.enabled]
         running_ids = {cid for cid in active_ids if states.get(cid) and states[cid].status == "running"}
         if running_ids == set(active_ids):
             for cid in active_ids:
@@ -157,6 +157,20 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
         result.update(_snapshot(context))
         return result
 
+    if action == "move_mod":
+        mod_id = str(payload.get("mod_id", "")).strip()
+        direction = int(payload.get("direction", 0) or 0)
+        if mod_id and direction:
+            context.mods.move(mod_id, direction)
+        return _snapshot(context)
+
+    if action == "set_mod_emoji":
+        mod_id = str(payload.get("mod_id", "")).strip()
+        emoji = str(payload.get("emoji", "")).strip()
+        if mod_id and emoji:
+            context.mods.set_emoji(mod_id, emoji)
+        return _snapshot(context)
+
     if action == "restart_zapret_if_running":
         states = {item.component_id: item for item in context.processes.list_states()}
         if states.get("zapret") and states["zapret"].status == "running":
@@ -196,6 +210,41 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
         )
         return {"results": results}
 
+    if action == "run_general_diagnostic_single":
+        general_id = str(payload.get("general_id", "")).strip()
+        cancel_path = str(payload.get("cancel_path", "") or "")
+        result = context.processes.run_single_general_diagnostic(
+            general_id,
+            progress_callback=(
+                lambda current, total, name: emit_progress(
+                    {"current": current, "total": total, "name": name}
+                )
+                if emit_progress is not None
+                else None
+            ),
+            stop_callback=(lambda: bool(cancel_path) and os.path.exists(cancel_path)),
+        )
+        return result
+
+    if action == "run_settings_diagnostics":
+        cancel_path = str(payload.get("cancel_path", "") or "")
+        result = context.processes.run_settings_diagnostics(
+            progress_callback=(
+                lambda current, total, name: emit_progress(
+                    {"current": current, "total": total, "name": name}
+                )
+                if emit_progress is not None
+                else None
+            ),
+            stop_callback=(lambda: bool(cancel_path) and os.path.exists(cancel_path)),
+        )
+        return result
+
+    if action == "update_zapret_runtime":
+        result = context.processes.update_zapret_runtime()
+        result.update(_snapshot(context))
+        return result
+
     return {}
 
 
@@ -220,7 +269,7 @@ class BackendWorkerClient(QObject):
     def submit(self, action: str, payload: dict[str, Any] | None = None) -> str:
         task_id = uuid.uuid4().hex
         task_payload = dict(payload or {})
-        if action == "run_general_diagnostics":
+        if action in {"run_general_diagnostics", "run_general_diagnostic_single", "run_settings_diagnostics"}:
             cancel_path = os.path.join(tempfile.gettempdir(), f"zapret_hub_cancel_{task_id}.flag")
             try:
                 if os.path.exists(cancel_path):

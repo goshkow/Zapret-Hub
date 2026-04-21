@@ -160,7 +160,11 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         color: #d7e1f2;
         line-height: 1.3em;
     }
-    #ModsScroll, #ModsCanvas {
+    #ModsScroll, #ModsCanvas, #ComponentsScroll, #ComponentsCanvas {
+        background: transparent;
+        border: none;
+    }
+    #ComponentsScroll QScrollBar, #ComponentsCanvas QScrollBar, #ComponentsScroll QWidget#qt_scrollarea_viewport, #ComponentsCanvas QWidget#qt_scrollarea_viewport {
         background: transparent;
         border: none;
     }
@@ -247,6 +251,9 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         border-color: #6773ff;
         color: #ffffff;
         font-weight: 700;
+    }
+    QPushButton[class="primary"]:hover {
+        background: #6975ff;
     }
     QPushButton[class="danger"] {
         background: #151f33;
@@ -346,8 +353,8 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     QScrollBar:vertical {
         background: transparent;
         border: none;
-        width: 8px;
-        margin: 4px 1px 4px 1px;
+        width: 0px;
+        margin: 0px;
     }
     QScrollBar::groove:vertical {
         background: transparent;
@@ -355,12 +362,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         margin: 0px;
     }
     QScrollBar::handle:vertical {
-        background: rgba(91, 123, 178, 0.92);
+        background: transparent;
         min-height: 34px;
         border-radius: 4px;
     }
     QScrollBar::handle:vertical:hover {
-        background: rgba(116, 150, 212, 0.96);
+        background: transparent;
     }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
         height: 0px;
@@ -371,8 +378,8 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     QScrollBar:horizontal {
         background: transparent;
         border: none;
-        height: 8px;
-        margin: 1px 4px 1px 4px;
+        height: 0px;
+        margin: 0px;
     }
     QScrollBar::groove:horizontal {
         background: transparent;
@@ -380,12 +387,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         margin: 0px;
     }
     QScrollBar::handle:horizontal {
-        background: rgba(91, 123, 178, 0.92);
+        background: transparent;
         min-width: 34px;
         border-radius: 4px;
     }
     QScrollBar::handle:horizontal:hover {
-        background: rgba(116, 150, 212, 0.96);
+        background: transparent;
     }
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
         width: 0px;
@@ -410,12 +417,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     QTextEdit#FileEditor QScrollBar:vertical {
         background: transparent;
         border: none;
-        width: 7px;
-        margin: 6px 1px 6px 1px;
+        width: 0px;
+        margin: 0px;
     }
     QListWidget#FilesList QScrollBar::handle:vertical,
     QTextEdit#FileEditor QScrollBar::handle:vertical {
-        background: rgba(125, 154, 211, 0.96);
+        background: transparent;
         min-height: 40px;
         border-radius: 4px;
     }
@@ -423,12 +430,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     QTextEdit#FileEditor QScrollBar:horizontal {
         background: transparent;
         border: none;
-        height: 7px;
-        margin: 1px 6px 1px 6px;
+        height: 0px;
+        margin: 0px;
     }
     QListWidget#FilesList QScrollBar::handle:horizontal,
     QTextEdit#FileEditor QScrollBar::handle:horizontal {
-        background: rgba(125, 154, 211, 0.96);
+        background: transparent;
         min-width: 40px;
         border-radius: 4px;
     }
@@ -616,7 +623,11 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         color: #2a3648;
         line-height: 1.3em;
     }
-    #ModsScroll, #ModsCanvas {
+    #ModsScroll, #ModsCanvas, #ComponentsScroll, #ComponentsCanvas {
+        background: transparent;
+        border: none;
+    }
+    #ComponentsScroll QScrollBar, #ComponentsCanvas QScrollBar, #ComponentsScroll QWidget#qt_scrollarea_viewport, #ComponentsCanvas QWidget#qt_scrollarea_viewport {
         background: transparent;
         border: none;
     }
@@ -703,6 +714,9 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         border-color: #6773ff;
         color: #ffffff;
         font-weight: 700;
+    }
+    QPushButton[class="primary"]:hover {
+        background: #7cafff;
     }
     QPushButton[class="danger"] {
         background: #ffffff;
@@ -802,8 +816,8 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     QScrollBar:vertical {
         background: transparent;
         border: none;
-        width: 8px;
-        margin: 4px 1px 4px 1px;
+        width: 0px;
+        margin: 0px;
     }
     QScrollBar::groove:vertical {
         background: transparent;
@@ -811,12 +825,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         margin: 0px;
     }
     QScrollBar::handle:vertical {
-        background: rgba(122, 150, 196, 0.96);
+        background: transparent;
         min-height: 34px;
         border-radius: 4px;
     }
     QScrollBar::handle:vertical:hover {
-        background: rgba(104, 134, 184, 0.96);
+        background: transparent;
     }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
         height: 0px;
@@ -827,8 +841,8 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     QScrollBar:horizontal {
         background: transparent;
         border: none;
-        height: 8px;
-        margin: 1px 4px 1px 4px;
+        height: 0px;
+        margin: 0px;
     }
     QScrollBar::groove:horizontal {
         background: transparent;
@@ -836,12 +850,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         margin: 0px;
     }
     QScrollBar::handle:horizontal {
-        background: rgba(122, 150, 196, 0.96);
+        background: transparent;
         min-width: 34px;
         border-radius: 4px;
     }
     QScrollBar::handle:horizontal:hover {
-        background: rgba(104, 134, 184, 0.96);
+        background: transparent;
     }
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
         width: 0px;
@@ -866,12 +880,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     QTextEdit#FileEditor QScrollBar:vertical {
         background: transparent;
         border: none;
-        width: 7px;
-        margin: 6px 1px 6px 1px;
+        width: 0px;
+        margin: 0px;
     }
     QListWidget#FilesList QScrollBar::handle:vertical,
     QTextEdit#FileEditor QScrollBar::handle:vertical {
-        background: rgba(122, 150, 196, 0.96);
+        background: transparent;
         min-height: 40px;
         border-radius: 4px;
     }
@@ -879,12 +893,12 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     QTextEdit#FileEditor QScrollBar:horizontal {
         background: transparent;
         border: none;
-        height: 7px;
-        margin: 1px 6px 1px 6px;
+        height: 0px;
+        margin: 0px;
     }
     QListWidget#FilesList QScrollBar::handle:horizontal,
     QTextEdit#FileEditor QScrollBar::handle:horizontal {
-        background: rgba(122, 150, 196, 0.96);
+        background: transparent;
         min-width: 40px;
         border-radius: 4px;
     }

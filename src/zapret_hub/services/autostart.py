@@ -18,20 +18,7 @@ class AutostartManager:
         self.logging = logging
 
     def is_enabled(self) -> bool:
-        if self._task_exists():
-            return True
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_READ) as key:
-                for name in (self.APP_NAME, *self.LEGACY_APP_NAMES):
-                    try:
-                        value, _ = winreg.QueryValueEx(key, name)
-                        if value:
-                            return True
-                    except FileNotFoundError:
-                        continue
-                return False
-        except FileNotFoundError:
-            return False
+        return self._task_exists()
 
     def set_enabled(self, enabled: bool) -> None:
         command = self._build_command()
@@ -39,9 +26,6 @@ class AutostartManager:
         self._delete_task()
         if enabled:
             self._create_task(command)
-            self._set_run_key(command)
-        else:
-            self._remove_run_key()
         self.logging.log("info", "Windows autostart changed", enabled=enabled, command=command if enabled else "")
 
     def _build_command(self) -> str:
@@ -95,21 +79,13 @@ class AutostartManager:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
-    def _set_run_key(self, command: str) -> None:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            winreg.SetValueEx(key, self.APP_NAME, 0, winreg.REG_SZ, command)
-
-    def _remove_run_key(self) -> None:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            try:
-                winreg.DeleteValue(key, self.APP_NAME)
-            except FileNotFoundError:
-                pass
-
     def _remove_legacy_run_entries(self) -> None:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            for name in (self.APP_NAME, *self.LEGACY_APP_NAMES):
-                try:
-                    winreg.DeleteValue(key, name)
-                except FileNotFoundError:
-                    pass
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                for name in (self.APP_NAME, *self.LEGACY_APP_NAMES):
+                    try:
+                        winreg.DeleteValue(key, name)
+                    except FileNotFoundError:
+                        pass
+        except FileNotFoundError:
+            return

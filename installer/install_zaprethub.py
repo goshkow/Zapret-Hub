@@ -341,7 +341,7 @@ def _write_uninstall_registry(install_dir: Path, uninstaller_exe: Path, app_exe:
     uninstall_cmd = f'"{uninstaller_exe}" --uninstall --install-dir "{install_dir}"'
     values = {
         "DisplayName": "Zapret Hub",
-        "DisplayVersion": "1.3.0",
+        "DisplayVersion": "1.4.0",
         "Publisher": "goshkow",
         "InstallLocation": str(install_dir),
         "DisplayIcon": str(app_exe),
@@ -418,7 +418,15 @@ def _launch_folder_removal(install_dir: Path) -> None:
 
 
 class InstallerDialog(QDialog):
-    def __init__(self, title: str, text: str, with_yes_no: bool = False, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        text: str,
+        with_yes_no: bool = False,
+        parent: QWidget | None = None,
+        yes_text: str | None = None,
+        no_text: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self._drag_pos = None
         self._result_yes = False
@@ -467,9 +475,9 @@ class InstallerDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch(1)
         if with_yes_no:
-            no_btn = QPushButton(tr("Нет", "No"))
+            no_btn = QPushButton(no_text or tr("Нет", "No"))
             no_btn.clicked.connect(self._accept_no)
-            yes_btn = QPushButton(tr("Да", "Yes"))
+            yes_btn = QPushButton(yes_text or tr("Да", "Yes"))
             yes_btn.setObjectName("primary")
             yes_btn.clicked.connect(self._accept_yes)
             row.addWidget(no_btn)
@@ -787,15 +795,13 @@ class InstallerWindow(QMainWindow):
         dialog = InstallerDialog(
             tr("Найдена предыдущая версия", "Existing installation found"),
             tr(
-                "В выбранной папке уже есть файлы Zapret Hub.\n\n"
-                "Да — обновить программу и сохранить настройки, модификации и конфиги.\n"
-                "Нет — удалить старые данные и установить приложение начисто.",
-                "Zapret Hub files were found in the selected folder.\n\n"
-                "Yes — update the app and keep settings, mods, and configs.\n"
-                "No — remove old data and install a clean copy.",
+                "Хотите ли вы переустановить программу, удалив все данные, или обновить, сохранив все ваши пользовательские данные?",
+                "Do you want to reinstall the app and remove all data, or update it while keeping all of your user data?",
             ),
             with_yes_no=True,
             parent=self,
+            yes_text=tr("Обновить", "Update"),
+            no_text=tr("Переустановить", "Reinstall"),
         )
         dialog.exec()
         if dialog.result_mode == "yes":

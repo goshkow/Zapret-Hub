@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 
@@ -28,7 +29,11 @@ def run_tg_ws_proxy_worker(host: str, port: int, secret: str, verbose: bool = Fa
     try:
         from proxy import tg_ws_proxy
     except Exception as error:
-        _write_worker_error(install_root, f"Failed to import tg-ws-proxy worker: {error}\n{traceback.format_exc()}")
+        _write_worker_error(
+            install_root,
+            f"Failed to import tg-ws-proxy worker: {error}\n{traceback.format_exc()}",
+            "tg_worker_error.log",
+        )
         return 3
 
     argv = ["tg-ws-proxy", "--host", host, "--port", str(port)]
@@ -43,18 +48,27 @@ def run_tg_ws_proxy_worker(host: str, port: int, secret: str, verbose: bool = Fa
         try:
             tg_ws_proxy.main()
         except Exception as error:
-            _write_worker_error(install_root, f"Worker crashed: {error}\n{traceback.format_exc()}")
+            _write_worker_error(
+                install_root,
+                f"Worker crashed: {error}\n{traceback.format_exc()}",
+                "tg_worker_error.log",
+            )
             return 4
     finally:
         sys.argv = prev_argv
     return 0
+def _resolve_install_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
 
 
-def _write_worker_error(install_root: Path, message: str) -> None:
+def _write_worker_error(install_root: Path, message: str, filename: str) -> None:
     try:
         logs = install_root / "logs"
         logs.mkdir(parents=True, exist_ok=True)
-        path = logs / "tg_worker_error.log"
-        path.write_text(message, encoding="utf-8")
+        path = logs / filename
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{datetime.utcnow().isoformat()}] {message}\n")
     except Exception:
         pass

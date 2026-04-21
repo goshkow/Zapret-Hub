@@ -10,6 +10,7 @@ import tempfile
 import zipfile
 from urllib.request import urlopen
 import json
+import random
 
 from zapret_hub import __version__
 from zapret_hub.domain import InstalledMod, ModIndexItem
@@ -20,6 +21,7 @@ from zapret_hub.services.storage import StorageManager
 
 
 class ModsManager:
+    _EMOJI_CHOICES = ["✨", "🪄", "🔥", "⚡", "🧩", "🎮", "🌐", "🛡️", "🚀", "💎", "📦", "🧪"]
     def __init__(
         self,
         storage: StorageManager,
@@ -52,6 +54,27 @@ class ModsManager:
     def list_installed(self) -> list[InstalledMod]:
         raw = self.storage.read_json(self._installed_path, default=[]) or []
         return [InstalledMod(**item) for item in raw]
+
+    def move(self, mod_id: str, direction: int) -> list[InstalledMod]:
+        installed = self.list_installed()
+        index = next((i for i, item in enumerate(installed) if item.id == mod_id), -1)
+        if index < 0:
+            return installed
+        target = max(0, min(len(installed) - 1, index + direction))
+        if target == index:
+            return installed
+        item = installed.pop(index)
+        installed.insert(target, item)
+        self.storage.write_json(self._installed_path, [asdict(entry) for entry in installed])
+        self.merge.rebuild()
+        return installed
+
+    def set_emoji(self, mod_id: str, emoji: str) -> InstalledMod:
+        installed = self.list_installed()
+        entry = next(item for item in installed if item.id == mod_id)
+        entry.emoji = emoji.strip() or entry.emoji
+        self.storage.write_json(self._installed_path, [asdict(item) for item in installed])
+        return entry
 
     def install(self, mod_id: str) -> InstalledMod:
         item = next(entry for entry in self.fetch_index() if entry.id == mod_id)
@@ -183,8 +206,10 @@ class ModsManager:
     ) -> InstalledMod:
         general_sources, list_sources, bin_sources, utils_sources = self._collect_import_candidates(staged_root)
         general_scripts = self._dedupe_general_names(sorted(general_sources))
-        if not general_scripts:
-            raise ValueError("Не найдено ни одного general-файла. Нужны .bat/.cmd конфиги для Zapret.")
+        if not general_scripts and not list_sources:
+            raise ValueError(
+                "Не найдено ни одного совместимого general-файла или списка. Добавьте .bat/.cmd конфиг или .txt-листы Zapret."
+            )
 
         mod_id = self._unique_mod_id(suggested_name)
         target_dir = self.storage.paths.mods_dir / mod_id
@@ -203,13 +228,14 @@ class ModsManager:
             path=str(target_dir),
             name=display_name or suggested_name,
             author=author,
-            description=description,
+            description=description or self._build_bundle_description(general_scripts, list_sources),
             source_url=source_url,
             enabled=True,
             source_type="zapret_bundle",
             general_scripts=general_scripts,
+            emoji="🪄" if mod_id == "unified-by-goshkow" else random.choice(self._EMOJI_CHOICES),
         )
-        installed.append(entry)
+        installed.insert(0, entry)
         self.storage.write_json(self._installed_path, [asdict(item) for item in installed])
 
         enabled_ids = {item.id for item in installed if item.enabled}
@@ -217,6 +243,14 @@ class ModsManager:
         self.merge.rebuild()
         self.logging.log("info", "Zapret bundle imported", mod_id=mod_id, path=str(target_dir), generals=general_scripts, source=source_url or "local")
         return entry
+
+    def _build_bundle_description(self, general_scripts: list[str], list_sources: dict[str, list[Path]]) -> str:
+        parts: list[str] = []
+        if general_scripts:
+            parts.append(f"General: {len(general_scripts)}")
+        if list_sources:
+            parts.append(f"Lists: {len(list_sources)}")
+        return " | ".join(parts)
 
     def _materialize_mod_bundle(
         self,
@@ -293,7 +327,6 @@ class ModsManager:
         list_sources: dict[str, list[Path]] = {}
         bin_sources: dict[str, Path] = {}
         utils_sources: dict[str, Path] = {}
-        base_names = self._base_general_names()
         allowed_bin_suffixes = {".exe", ".dll", ".bin", ".sys", ".dat"}
         allowed_utils_suffixes = {".txt", ".ps1", ".enabled", ".json", ".cmd", ".bat"}
 
@@ -305,8 +338,6 @@ class ModsManager:
             parent_lower = file_path.parent.name.lower()
 
             if suffix in {".bat", ".cmd"} and not lowered.startswith("service"):
-                if lowered in base_names:
-                    continue
                 if lowered not in general_sources:
                     general_sources[file_path.name] = file_path
                 continue
@@ -342,12 +373,11 @@ class ModsManager:
         return any(marker in sample.lower() for marker in (".com", ".gg", ".ru", ".net", "/", ":"))
 
     def _dedupe_general_names(self, names: list[str]) -> list[str]:
-        base_names = self._base_general_names()
         result: list[str] = []
         seen: set[str] = set()
         for name in names:
             lowered = name.lower()
-            if lowered in seen or lowered in base_names:
+            if lowered in seen:
                 continue
             seen.add(lowered)
             result.append(name)

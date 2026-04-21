@@ -118,62 +118,119 @@ class UpdatesManager:
         script_root = Path(tempfile.gettempdir()) / "zapret_hub_updates"
         script_root.mkdir(parents=True, exist_ok=True)
         script_path = script_root / f"apply_update_{int(datetime.utcnow().timestamp() * 1000)}.ps1"
+        launcher_path = script_root / f"apply_update_{int(datetime.utcnow().timestamp() * 1000)}.cmd"
+        log_path = script_root / f"apply_update_{int(datetime.utcnow().timestamp() * 1000)}.log"
 
         script = textwrap.dedent(
             f"""
+            $ErrorActionPreference = 'SilentlyContinue'
             $pidToWait = {current_pid}
             $src = '{str(extract_root).replace("'", "''")}'
             $dst = '{str(install_root).replace("'", "''")}'
             $launch = '{str(current_executable).replace("'", "''")}'
-            $managed = @('_internal', 'runtime', 'ui_assets', 'sample_data', 'zapret_hub.exe')
+            $tempRoot = '{str(Path(prepared_update["temp_root"])).replace("'", "''")}'
+            $logPath = '{str(log_path).replace("'", "''")}'
+            $preserve = @('data', 'mods', 'configs', 'cache', 'logs', 'backups')
+            $backupRoot = Join-Path '{str(script_root).replace("'", "''")}' ('preserve_' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+            Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] updater started')
 
             for ($i = 0; $i -lt 120; $i++) {{
               if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
-              Start-Sleep -Milliseconds 500
+              Start-Sleep -Milliseconds 250
             }}
 
-            foreach ($item in $managed) {{
-              $srcItem = Join-Path $src $item
-              $dstItem = Join-Path $dst $item
-              if (-not (Test-Path $srcItem)) {{ continue }}
-              try {{
-                if (Test-Path $dstItem) {{
-                  attrib -r -s -h $dstItem /s /d *> $null
-                  Remove-Item $dstItem -Recurse -Force -ErrorAction SilentlyContinue
-                }}
-              }} catch {{}}
-              if (Test-Path $srcItem -PathType Container) {{
-                Copy-Item $srcItem $dstItem -Recurse -Force
-              }} else {{
-                Copy-Item $srcItem $dstItem -Force
+            if (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{
+              Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] forcing old process stop')
+              Stop-Process -Id $pidToWait -Force -ErrorAction SilentlyContinue
+              for ($i = 0; $i -lt 40; $i++) {{
+                if (-not (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue)) {{ break }}
+                Start-Sleep -Milliseconds 250
               }}
             }}
 
-            Start-Sleep -Milliseconds 600
+            New-Item -ItemType Directory -Path $dst -Force | Out-Null
+
+            foreach ($item in $preserve) {{
+              $dstItem = Join-Path $dst $item
+              try {{
+                if (Test-Path $dstItem) {{
+                  Move-Item $dstItem (Join-Path $backupRoot $item) -Force
+                }}
+              }} catch {{}}
+            }}
+            Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] preserved user dirs')
+
+            Get-ChildItem -LiteralPath $dst -Force -ErrorAction SilentlyContinue | ForEach-Object {{
+              try {{
+                attrib -r -s -h $_.FullName /s /d *> $null
+              }} catch {{}}
+              try {{
+                Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+              }} catch {{}}
+            }}
+
+            Get-ChildItem -LiteralPath $src -Force | ForEach-Object {{
+              if ($preserve -contains $_.Name) {{ return }}
+              $target = Join-Path $dst $_.Name
+              if ($_.PSIsContainer) {{
+                Copy-Item $_.FullName $target -Recurse -Force
+              }} else {{
+                Copy-Item $_.FullName $target -Force
+              }}
+            }}
+            Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] payload copied')
+
+            foreach ($item in $preserve) {{
+              $backupItem = Join-Path $backupRoot $item
+              $target = Join-Path $dst $item
+              if (Test-Path $backupItem) {{
+                try {{
+                  if (Test-Path $target) {{
+                    Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+                  }}
+                }} catch {{}}
+                Move-Item $backupItem $target -Force
+              }}
+            }}
+            Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] user data restored')
+
+            Start-Sleep -Milliseconds 400
             Start-Process -FilePath $launch
+            Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] relaunched app')
+            Remove-Item $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
             Remove-Item '{str(script_path).replace("'", "''")}' -Force -ErrorAction SilentlyContinue
             """
         ).strip()
         script_path.write_text(script, encoding="utf-8")
+        launcher = textwrap.dedent(
+            f"""
+            @echo off
+            start "" /min powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script_path}"
+            exit /b 0
+            """
+        ).strip() + "\n"
+        launcher_path.write_text(launcher, encoding="utf-8")
 
         startupinfo = None
         creationflags = 0
         if sys.platform.startswith("win"):
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            creationflags = (
+                getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0
 
         subprocess.Popen(
             [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-WindowStyle",
-                "Hidden",
-                "-File",
-                str(script_path),
+                "cmd.exe",
+                "/c",
+                str(launcher_path),
             ],
             creationflags=creationflags,
             startupinfo=startupinfo,

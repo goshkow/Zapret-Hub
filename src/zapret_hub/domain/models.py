@@ -88,6 +88,7 @@ class InstalledMod:
     enabled: bool = False
     source_type: str = "generic"
     general_scripts: list[str] = field(default_factory=list)
+    emoji: str = ""
     installed_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
 

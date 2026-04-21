@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import shutil
@@ -29,7 +29,7 @@ class StorageManager:
             {
                 "id": "zapret",
                 "name": "Zapret",
-                "description": "Основной модуль обхода блокировок для сайтов и сервисов.",
+                "description": "РћСЃРЅРѕРІРЅРѕР№ РјРѕРґСѓР»СЊ РѕР±С…РѕРґР° Р±Р»РѕРєРёСЂРѕРІРѕРє РґР»СЏ СЃР°Р№С‚РѕРІ Рё СЃРµСЂРІРёСЃРѕРІ.",
                 "version": zapret_version,
                 "source": "https://github.com/Flowseal/zapret-discord-youtube",
                 "command": ["cmd.exe", "/c", "general.bat"],
@@ -39,7 +39,7 @@ class StorageManager:
             {
                 "id": "tg-ws-proxy",
                 "name": "Tg-Ws-Proxy",
-                "description": "Прокси для Telegram через локальный порт.",
+                "description": "РџСЂРѕРєСЃРё РґР»СЏ Telegram С‡РµСЂРµР· Р»РѕРєР°Р»СЊРЅС‹Р№ РїРѕСЂС‚.",
                 "version": tg_version,
                 "source": "https://github.com/Flowseal/tg-ws-proxy",
                 "command": ["TgWsProxy_windows.exe"],
@@ -97,7 +97,7 @@ class StorageManager:
                 encoding="utf-8",
             )
 
-        for filename in ("list-general-user.txt", "list-exclude-user.txt", "ipset-exclude-user.txt"):
+        for filename in ("list-general-user.txt", "list-exclude-user.txt", "ipset-all-user.txt", "ipset-exclude-user.txt"):
             path = self.paths.configs_dir / filename
             if not path.exists():
                 path.write_text("", encoding="utf-8")
@@ -144,9 +144,9 @@ class StorageManager:
         default_mod_meta = {
             "id": default_mod_id,
             "name": "Unified",
-            "description": "Позволяет обойти блокировки самых популярных сервисов, включая игровые сервисы, социальные сети и другие платформы.",
+            "description": "РџРѕР·РІРѕР»СЏРµС‚ РѕР±РѕР№С‚Рё Р±Р»РѕРєРёСЂРѕРІРєРё СЃР°РјС‹С… РїРѕРїСѓР»СЏСЂРЅС‹С… СЃРµСЂРІРёСЃРѕРІ, РІРєР»СЋС‡Р°СЏ РёРіСЂРѕРІС‹Рµ СЃРµСЂРІРёСЃС‹, СЃРѕС†РёР°Р»СЊРЅС‹Рµ СЃРµС‚Рё Рё РґСЂСѓРіРёРµ РїР»Р°С‚С„РѕСЂРјС‹.",
             "author": "goshkow",
-            "version": "1.3.0",
+                    "version": "1.4.0",
             "source_url": "bundled://unified-by-goshkow",
             "category": "gaming",
             "tags": ["gaming", "social", "cloudflare", "ubisoft", "arc-raiders"],
@@ -167,7 +167,7 @@ class StorageManager:
             ),
             None,
         )
-        desired_version = str(default_mod_meta.get("version", "1.3.0"))
+        desired_version = str(default_mod_meta.get("version", "1.4.0"))
         default_bundle = self._ensure_default_bundled_mod(
             default_mod_id,
             default_mod_meta,
@@ -265,7 +265,7 @@ class StorageManager:
         )
         return {
             "id": mod_id,
-            "version": str(meta.get("version", "1.3.0")),
+                    "version": str(meta.get("version", "1.4.0")),
             "path": str(target_dir),
             "enabled": False,
             "name": str(meta.get("name", "")),
@@ -274,6 +274,7 @@ class StorageManager:
             "source_url": str(meta.get("source_url", "")),
             "source_type": "zapret_bundle",
             "general_scripts": general_scripts,
+            "emoji": "🪄",
         }
 
     def _looks_like_materialized_mod_bundle(self, path: Path) -> bool:
@@ -393,3 +394,4 @@ class StorageManager:
         elif source.exists():
             shutil.copy2(source, destination)
         return backup_dir
+

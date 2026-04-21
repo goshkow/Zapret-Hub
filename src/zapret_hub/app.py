@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import ctypes
 import hashlib
 import multiprocessing
@@ -107,6 +107,8 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--tg-port", type=int, default=1443)
     parser.add_argument("--tg-secret", default="")
     parser.add_argument("--tg-verbose", action="store_true")
+    parser.add_argument("--parent-pid", type=int, default=0)
+    parser.add_argument("--hub-token", default="")
     known, _ = parser.parse_known_args(runtime_argv)
 
     if known.worker == "tg-ws-proxy":
@@ -116,10 +118,10 @@ def run(argv: list[str] | None = None) -> int:
             secret=known.tg_secret,
             verbose=known.tg_verbose,
         )
-
-    elevate_result = _ensure_admin_windows(runtime_argv)
-    if elevate_result in (2, 3):
-        return elevate_result
+    if not known.autostart_launch:
+        elevate_result = _ensure_admin_windows(runtime_argv)
+        if elevate_result in (2, 3):
+            return elevate_result
 
     _set_windows_app_id()
     multiprocessing.freeze_support()
@@ -155,6 +157,8 @@ def run(argv: list[str] | None = None) -> int:
                     while server.hasPendingConnections():
                         client = server.nextPendingConnection()
                         if client is not None:
+                            if client.bytesAvailable() <= 0:
+                                client.waitForReadyRead(350)
                             payload = bytes(client.readAll()).strip()
                             client.disconnectFromServer()
                             if payload == b"SHOW":
@@ -198,3 +202,4 @@ def run(argv: list[str] | None = None) -> int:
     bootstrap_thread.failed.connect(bootstrap_bridge.fail_bootstrap, Qt.ConnectionType.QueuedConnection)
     bootstrap_thread.start()
     return app.exec()
+

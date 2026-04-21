@@ -80,7 +80,7 @@ def bootstrap_application() -> ApplicationContext:
     diagnostics = DiagnosticsManager(storage, logging, processes, mods, merge)
     updates = UpdatesManager(storage, logging)
     profiles = ProfilesManager(storage)
-    files = FilesManager(storage)
+    files = FilesManager(storage, settings)
 
     return ApplicationContext(
         paths=paths,

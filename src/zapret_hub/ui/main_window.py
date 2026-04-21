@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
 import ctypes
+import os
+import platform
 import time
 import sys
 import threading
@@ -11,9 +13,10 @@ from pathlib import Path
 from zapret_hub import __version__
 from zapret_hub.domain import ComponentDefinition, ComponentState
 from PySide6.QtCore import QCoreApplication, QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QPropertyAnimation, QParallelAnimationGroup, Property, QByteArray
-from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QIcon, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractScrollArea,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -213,20 +216,21 @@ class AnimatedNavButton(QToolButton):
         radius = 12.0
         checked = self.isChecked()
 
+        base_icon_dx = float(self.property("baseIconDx") or 0.0)
         if self._light_theme:
-            base_fill = QColor(181, 204, 242, 10)
+            base_fill = QColor(181, 204, 242, 34)
             hover_fill = QColor(194, 214, 245, int(30 * self._hover_progress))
             checked_fill = QColor(0, 0, 0, 0)
             border = QColor(191, 210, 240, int(88 * self._hover_progress))
             glow_color = QColor(255, 255, 255, int(44 * self._hover_progress))
         elif self._theme_name == "night":
-            base_fill = QColor(90, 112, 152, 8)
+            base_fill = QColor(90, 112, 152, 22)
             hover_fill = QColor(95, 124, 177, int(26 * self._hover_progress))
             checked_fill = QColor(0, 0, 0, 0)
             border = QColor(102, 132, 191, int(84 * self._hover_progress))
             glow_color = QColor(126, 164, 255, int(58 * self._hover_progress))
         else:
-            base_fill = QColor(126, 133, 145, 7)
+            base_fill = QColor(126, 133, 145, 20)
             hover_fill = QColor(144, 151, 165, int(24 * self._hover_progress))
             checked_fill = QColor(0, 0, 0, 0)
             border = QColor(154, 162, 174, int(78 * self._hover_progress))
@@ -234,7 +238,13 @@ class AnimatedNavButton(QToolButton):
 
         fill = QColor(checked_fill if checked else base_fill)
         if not checked and self._hover_progress > 0:
-            fill = hover_fill
+            mix = max(0.0, min(1.0, self._hover_progress))
+            fill = QColor(
+                int(base_fill.red() + (hover_fill.red() - base_fill.red()) * mix),
+                int(base_fill.green() + (hover_fill.green() - base_fill.green()) * mix),
+                int(base_fill.blue() + (hover_fill.blue() - base_fill.blue()) * mix),
+                int(base_fill.alpha() + (hover_fill.alpha() - base_fill.alpha()) * mix),
+            )
         painter.setPen(QPen(border if (border.alpha() > 0 and not checked) else QColor(0, 0, 0, 0), 1))
         painter.setBrush(fill)
         painter.drawRoundedRect(rect, radius, radius)
@@ -250,7 +260,7 @@ class AnimatedNavButton(QToolButton):
         icon_size = max(20, round(26 * self._icon_scale))
         pixmap = self.icon().pixmap(icon_size, icon_size)
         target = QRectF(
-            (self.width() - icon_size) / 2.0 + self._icon_dx,
+            (self.width() - icon_size) / 2.0 + self._icon_dx + base_icon_dx,
             (self.height() - icon_size) / 2.0 + self._icon_dy,
             icon_size,
             icon_size,
@@ -764,6 +774,224 @@ class ClickableCard(QFrame):
         super().mouseReleaseEvent(event)
 
 
+class ScrollFadeOverlay(QWidget):
+    def __init__(self, scrollable: QAbstractScrollArea) -> None:
+        super().__init__(scrollable.viewport())
+        self._scrollable = scrollable
+        self._theme_name = "night"
+        self._top_visible = False
+        self._bottom_visible = False
+        self._fade_height = 18
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.hide()
+        scrollable.viewport().installEventFilter(self)
+        scrollable.verticalScrollBar().valueChanged.connect(self._sync_state)
+        scrollable.verticalScrollBar().rangeChanged.connect(lambda *_: self._sync_state())
+        self._sync_geometry()
+        self._sync_state()
+
+    def set_theme(self, theme: str) -> None:
+        self._theme_name = theme
+        self.update()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._scrollable.viewport() and event.type() in {QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.Paint}:
+            self._sync_geometry()
+            if event.type() != QEvent.Type.Paint:
+                QTimer.singleShot(0, self._sync_state)
+        return super().eventFilter(watched, event)
+
+    def _surface_color(self) -> QColor:
+        if self._theme_name == "light":
+            return QColor("#f4f7fc")
+        if self._theme_name == "light blue":
+            return QColor("#e4f0ff")
+        if self._theme_name == "oled":
+            return QColor("#101215")
+        if self._theme_name == "dark":
+            return QColor("#15171a")
+        return QColor("#0d1320")
+
+    def _sync_geometry(self) -> None:
+        viewport = self._scrollable.viewport()
+        self.setGeometry(viewport.rect())
+        self.raise_()
+
+    def _sync_state(self) -> None:
+        bar = self._scrollable.verticalScrollBar()
+        maximum = max(0, int(bar.maximum()))
+        value = max(0, int(bar.value()))
+        self._top_visible = value > 0
+        self._bottom_visible = maximum > 0 and value < maximum
+        visible = self._top_visible or self._bottom_visible
+        self.setVisible(visible)
+        if visible:
+            self.raise_()
+            self.update()
+
+    def paintEvent(self, event: QEvent) -> None:
+        if not (self._top_visible or self._bottom_visible):
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        color = self._surface_color()
+        width = self.width()
+        fade_height = min(self._fade_height, max(10, self.height() // 5))
+        if self._top_visible:
+            top = QLinearGradient(0, 0, 0, fade_height)
+            top.setColorAt(0.0, color)
+            top.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+            painter.fillRect(QRectF(0, -1, width, fade_height + 2), top)
+        if self._bottom_visible:
+            bottom = QLinearGradient(0, self.height() - fade_height, 0, self.height())
+            bottom.setColorAt(0.0, QColor(color.red(), color.green(), color.blue(), 0))
+            bottom.setColorAt(1.0, color)
+            painter.fillRect(QRectF(0, self.height() - fade_height - 1, width, fade_height + 2), bottom)
+
+
+def _content_surface_color(theme: str) -> QColor:
+    if theme == "light":
+        return QColor("#f4f7fc")
+    if theme == "light blue":
+        return QColor("#e4f0ff")
+    if theme == "oled":
+        return QColor("#101215")
+    if theme == "dark":
+        return QColor("#15171a")
+    return QColor("#0d1320")
+
+
+class PageTransitionOverlay(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._background_color = QColor(0, 0, 0, 0)
+        self._old_pixmap = QPixmap()
+        self._new_pixmap = QPixmap()
+        self._old_opacity = 0.0
+        self._new_opacity = 0.0
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.hide()
+
+    def set_background_color(self, color: QColor) -> None:
+        self._background_color = QColor(color)
+        self.update()
+
+    def set_old_pixmap(self, pixmap: QPixmap | None) -> None:
+        self._old_pixmap = QPixmap() if pixmap is None else QPixmap(pixmap)
+        self.update()
+
+    def set_new_pixmap(self, pixmap: QPixmap | None) -> None:
+        self._new_pixmap = QPixmap() if pixmap is None else QPixmap(pixmap)
+        self.update()
+
+    def clear_transition(self) -> None:
+        self._old_pixmap = QPixmap()
+        self._new_pixmap = QPixmap()
+        self._old_opacity = 0.0
+        self._new_opacity = 0.0
+        self.update()
+
+    def _get_old_opacity(self) -> float:
+        return self._old_opacity
+
+    def _set_old_opacity(self, value: float) -> None:
+        self._old_opacity = float(value)
+        self.update()
+
+    def _get_new_opacity(self) -> float:
+        return self._new_opacity
+
+    def _set_new_opacity(self, value: float) -> None:
+        self._new_opacity = float(value)
+        self.update()
+
+    oldOpacity = Property(float, _get_old_opacity, _set_old_opacity)
+    newOpacity = Property(float, _get_new_opacity, _set_new_opacity)
+
+    def paintEvent(self, event: QEvent) -> None:
+        if self._old_opacity <= 0.0 and self._new_opacity <= 0.0 and self._background_color.alpha() == 0:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.fillRect(self.rect(), self._background_color)
+        target = QRectF(self.rect())
+        if not self._old_pixmap.isNull() and self._old_opacity > 0.0:
+            painter.save()
+            painter.setOpacity(self._old_opacity)
+            painter.drawPixmap(target, self._old_pixmap, QRectF(self._old_pixmap.rect()))
+            painter.restore()
+        if not self._new_pixmap.isNull() and self._new_opacity > 0.0:
+            painter.save()
+            painter.setOpacity(self._new_opacity)
+            painter.drawPixmap(target, self._new_pixmap, QRectF(self._new_pixmap.rect()))
+            painter.restore()
+
+
+class EmojiBadgeButton(QToolButton):
+    def __init__(self, emoji: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._emoji = emoji
+        self._emoji_color = QColor("#ffffff")
+        self._offset = QPoint(0, 0)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAutoRaise(True)
+
+    def setEmoji(self, emoji: str) -> None:
+        self._emoji = emoji
+        self.update()
+
+    def setEmojiColor(self, color: str | QColor) -> None:
+        self._emoji_color = QColor(color)
+        self.update()
+
+    def setEmojiOffset(self, dx: float, dy: float) -> None:
+        self._offset = QPoint(int(round(dx)), int(round(dy)))
+        self.update()
+
+    def paintEvent(self, event: QEvent) -> None:
+        if not self._emoji:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        font = painter.font()
+        font.setPointSize(15)
+        painter.setFont(font)
+        painter.setPen(self._emoji_color)
+        draw_rect = self.rect().adjusted(1, 1, -1, -1).translated(self._offset)
+        painter.drawText(draw_rect, int(Qt.AlignmentFlag.AlignCenter), self._emoji)
+
+
+class SmoothScrollController(QObject):
+    def __init__(self, scrollable: QAbstractScrollArea) -> None:
+        super().__init__(scrollable)
+        self._scrollable = scrollable
+        self._target_value = scrollable.verticalScrollBar().value()
+        self._animation = QPropertyAnimation(scrollable.verticalScrollBar(), b"value", self)
+        self._animation.setDuration(170)
+        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        scrollable.viewport().installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._scrollable.viewport() and event.type() == QEvent.Type.Wheel:
+            wheel = event  # type: ignore[assignment]
+            delta = 0
+            if hasattr(wheel, "pixelDelta") and wheel.pixelDelta().y() != 0:  # type: ignore[attr-defined]
+                delta = int(wheel.pixelDelta().y())  # type: ignore[attr-defined]
+            elif hasattr(wheel, "angleDelta"):
+                delta = int(wheel.angleDelta().y() / 2)  # type: ignore[attr-defined]
+            if delta != 0:
+                bar = self._scrollable.verticalScrollBar()
+                self._target_value = max(bar.minimum(), min(bar.maximum(), self._target_value - delta))
+                self._animation.stop()
+                self._animation.setStartValue(bar.value())
+                self._animation.setEndValue(self._target_value)
+                self._animation.start()
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
+
 def _disable_native_window_rounding(widget: QWidget) -> None:
     if not sys.platform.startswith("win"):
         return
@@ -808,6 +1036,9 @@ class AppDialog(QDialog):
         super().__init__(parent)
         self.context = context
         self._drag_pos: QPoint | None = None
+        self._fade_animation: QPropertyAnimation | None = None
+        self._fade_closing = False
+        self._force_done = False
         self.setObjectName("AppDialogWindow")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowFlag(Qt.WindowType.Dialog, True)
@@ -885,14 +1116,59 @@ class AppDialog(QDialog):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Print:
-            event.ignore()
+            super().keyPressEvent(event)
             return
         super().keyPressEvent(event)
 
     def showEvent(self, event: QEvent) -> None:
         _disable_native_window_rounding(self)
         super().showEvent(event)
+        self._fade_closing = False
+        if self._fade_animation is not None:
+            self._fade_animation.stop()
+        self.setWindowOpacity(0.0)
+        animation = QPropertyAnimation(self, QByteArray(b"windowOpacity"), self)
+        animation.setDuration(160)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.start()
+        self._fade_animation = animation
         QTimer.singleShot(0, lambda: _bring_widget_to_front(self))
+
+    def _start_close_fade(self, result: int) -> None:
+        if self._force_done:
+            super().done(result)
+            return
+        if self._fade_closing:
+            return
+        self._fade_closing = True
+        if self._fade_animation is not None:
+            self._fade_animation.stop()
+        animation = QPropertyAnimation(self, QByteArray(b"windowOpacity"), self)
+        animation.setDuration(120)
+        animation.setStartValue(float(self.windowOpacity()))
+        animation.setEndValue(0.0)
+        animation.setEasingCurve(QEasingCurve.Type.InCubic)
+
+        def _finish() -> None:
+            self._force_done = True
+            try:
+                super(AppDialog, self).done(result)
+            finally:
+                self._force_done = False
+                self._fade_closing = False
+                self.setWindowOpacity(1.0)
+
+        animation.finished.connect(_finish)
+        animation.start()
+        self._fade_animation = animation
+
+    def done(self, result: int) -> None:
+        if self._force_done:
+            super().done(result)
+            return
+        self._start_close_fade(result)
 
 
 class SettingsDialog(AppDialog):
@@ -1038,7 +1314,8 @@ class MainWindow(QMainWindow):
         self._updating_general_combo = False
         self._pending_info_message: tuple[str, str] | None = None
         self._components_cards_root: QWidget | None = None
-        self._components_cards_layout: QHBoxLayout | None = None
+        self._components_cards_layout: QGridLayout | None = None
+        self._components_scroll: QScrollArea | None = None
         self._component_loading_buttons: dict[str, QPushButton] = {}
         self._component_loading_base_text: dict[str, str] = {}
         self._component_loading_frame = 0
@@ -1053,6 +1330,12 @@ class MainWindow(QMainWindow):
         self._general_test_current_index = 0
         self._general_test_total = 0
         self._general_test_last_progress_at = 0.0
+        self._general_test_options: list[dict[str, str]] = []
+        self._general_test_results: list[dict[str, object]] = []
+        self._general_test_next_option_index = 0
+        self._general_test_target_budget_seconds = 0
+        self._general_test_remaining_budget_seconds = 0
+        self._general_test_found_working_id = ""
         self._general_test_running = False
         self._general_test_cancelled = False
         self._general_test_show_results = True
@@ -1062,6 +1345,10 @@ class MainWindow(QMainWindow):
         self._general_test_eta_timer.timeout.connect(self._update_general_test_eta)
         self._general_test_task_id: str | None = None
         self._first_general_prompt: AppDialog | None = None
+        self._settings_diag_dialog: AppDialog | None = None
+        self._settings_diag_status_label: QLabel | None = None
+        self._settings_diag_progress_bar: QProgressBar | None = None
+        self._settings_diag_task_id: str | None = None
         self._loading_action = "connect"
         self._tools_btn: QToolButton | None = None
         self._settings_btn: QToolButton | None = None
@@ -1079,6 +1366,13 @@ class MainWindow(QMainWindow):
         self._editor_title_label: QLabel | None = None
         self._logs_title_label: QLabel | None = None
         self._logs_refresh_btn: QPushButton | None = None
+        self._logs_source_combo: QComboBox | None = None
+        self._logs_stack: QStackedWidget | None = None
+        self._logs_loading_label: QLabel | None = None
+        self._current_log_source = "app"
+        self._logs_live_timer = QTimer(self)
+        self._logs_live_timer.setInterval(1000)
+        self._logs_live_timer.timeout.connect(self._refresh_logs_live)
         self._tray_show_action: QAction | None = None
         self._tray_quit_action: QAction | None = None
         self._tray_toggle_action: QAction | None = None
@@ -1119,9 +1413,13 @@ class MainWindow(QMainWindow):
         self._page_opacity_effect: QGraphicsOpacityEffect | None = None
         self._page_transition_overlay: QWidget | None = None
         self._page_transition_overlay_label: QLabel | None = None
+        self._page_transition_overlay_next_label: QLabel | None = None
         self._page_transition_overlay_blur_effect: QGraphicsBlurEffect | None = None
         self._page_transition_overlay_opacity_effect: QGraphicsOpacityEffect | None = None
+        self._page_transition_overlay_next_opacity_effect: QGraphicsOpacityEffect | None = None
         self._pages_shell: QWidget | None = None
+        self._pages_host: QWidget | None = None
+        self._content_surface: QWidget | None = None
         self._page_transition_out: QPropertyAnimation | None = None
         self._page_transition_in: QPropertyAnimation | None = None
         self._page_transition_target = -1
@@ -1129,6 +1427,23 @@ class MainWindow(QMainWindow):
         self._window_opacity_animation: QPropertyAnimation | None = None
         self._window_fade_pending_action: str | None = None
         self._nav_highlight_initialized = False
+        self._skip_next_show_fade = False
+        self._files_refresh_token = 0
+        self._files_loading_timer = QTimer(self)
+        self._files_loading_timer.setInterval(170)
+        self._files_loading_timer.timeout.connect(self._advance_files_loading_frame)
+        self._files_loading_frame = 0
+        self._files_tags_loading_label: QLabel | None = None
+        self._files_list_loading_label: QLabel | None = None
+        self._files_editor_loading_label: QLabel | None = None
+        self._files_tags_stack: QStackedWidget | None = None
+        self._files_list_stack: QStackedWidget | None = None
+        self._files_editor_stack: QStackedWidget | None = None
+        self._file_content_refresh_token = 0
+        self._pending_file_content_path = ""
+        self._scroll_fade_overlays: list[ScrollFadeOverlay] = []
+        self._smooth_scroll_helpers: list[SmoothScrollController] = []
+        self._active_emoji_popup: QWidget | None = None
 
         self._icons_dir = self.context.paths.ui_assets_dir / "icons"
         self._icon_cache: dict[str, QIcon] = {}
@@ -1225,7 +1540,6 @@ class MainWindow(QMainWindow):
                         continue
             if snapshot_states:
                 self._component_states_cache = snapshot_states
-
     def showEvent(self, event: QEvent) -> None:
         super().showEvent(event)
         self._sync_window_icon()
@@ -1233,11 +1547,29 @@ class MainWindow(QMainWindow):
         self._sync_nav_highlight(animated=self._nav_highlight_initialized)
         if not self._nav_highlight_initialized:
             self._nav_highlight_initialized = True
-        self._animate_window_fade(showing=True)
+        if self._skip_next_show_fade:
+            self._skip_next_show_fade = False
+            self.setWindowOpacity(1.0)
+        else:
+            self._animate_window_fade(showing=True)
+        self._schedule_post_show_sync()
         if self._skip_next_show_focus:
             self._skip_next_show_focus = False
             return
         QTimer.singleShot(0, lambda: _bring_widget_to_front(self))
+
+    def _schedule_post_show_sync(self) -> None:
+        self._mark_dirty("dashboard", "components", "mods", "files", "logs", "tray")
+
+        def _sync() -> None:
+            self._sync_power_aura_geometry()
+            self._sync_nav_highlight(animated=self._nav_highlight_initialized)
+            if hasattr(self, "pages") and self.pages.currentIndex() == 1:
+                self._sync_component_card_layout()
+
+        QTimer.singleShot(0, _sync)
+        QTimer.singleShot(80, _sync)
+        QTimer.singleShot(180, _sync)
 
     def _sync_window_icon(self) -> None:
         icon = self._icon("app.ico")
@@ -1313,6 +1645,8 @@ class MainWindow(QMainWindow):
         self._reposition_loading_overlay()
         self._reposition_page_transition_overlay()
         self._sync_power_aura_geometry()
+        if hasattr(self, "pages") and self.pages.currentIndex() == 1:
+            QTimer.singleShot(0, lambda: self._sync_component_card_layout())
 
     def _sync_power_aura_geometry(self) -> None:
         if self.power_aura is None or not hasattr(self, "_power_aura_host") or not hasattr(self, "power_button"):
@@ -1338,12 +1672,10 @@ class MainWindow(QMainWindow):
 
     def _reposition_page_transition_overlay(self) -> None:
         overlay = self._page_transition_overlay
-        overlay_label = self._page_transition_overlay_label
-        shell = self._pages_shell
-        if overlay is None or overlay_label is None or shell is None:
+        surface = self._content_surface
+        if overlay is None or surface is None:
             return
-        overlay.setGeometry(shell.rect())
-        overlay_label.setGeometry(overlay.rect())
+        overlay.setGeometry(surface.rect())
 
     def _show_loading_overlay(self, text: str | None = None, *, title: str | None = None, context: str = "general") -> None:
         self._loading_overlay_context = context
@@ -1420,6 +1752,10 @@ class MainWindow(QMainWindow):
         run_tests.triggered.connect(self._run_general_tests_popup)
         menu.addAction(run_tests)
 
+        tune_settings = QAction(self._t("Подобрать настройки", "Find best settings"), self)
+        tune_settings.triggered.connect(self._run_settings_diagnostics_popup)
+        menu.addAction(tune_settings)
+
         run_diag = QAction(self._t("Запустить диагностику", "Run diagnostics"), self)
         run_diag.triggered.connect(self._run_diagnostics_popup)
         menu.addAction(run_diag)
@@ -1448,6 +1784,8 @@ class MainWindow(QMainWindow):
         for idx, item in enumerate(self._nav_items):
             btn = AnimatedNavButton()
             btn.setProperty("class", "nav")
+            if item.key == "files":
+                btn.setProperty("baseIconDx", 1.0)
             btn.setCheckable(True)
             btn.setAutoExclusive(True)
             btn.setIcon(self._icon(item.icon_file))
@@ -1473,8 +1811,9 @@ class MainWindow(QMainWindow):
 
         body = QFrame()
         body.setObjectName("ContentSurface")
+        self._content_surface = body
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(12, 12, 12, 12)
+        body_layout.setContentsMargins(12, 12, 12, 0)
         body_layout.setSpacing(8)
 
         pages_shell = QWidget()
@@ -1492,6 +1831,7 @@ class MainWindow(QMainWindow):
         pages_host.setProperty("class", "pageCanvas")
         pages_host.setAutoFillBackground(False)
         pages_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self._pages_host = pages_host
         pages_host_layout = QVBoxLayout(pages_host)
         pages_host_layout.setContentsMargins(0, 0, 0, 0)
         pages_host_layout.setSpacing(0)
@@ -1506,32 +1846,18 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_mods_page())
         self.pages.addWidget(self._build_files_page())
         self.pages.addWidget(self._build_logs_page())
-        self._page_blur_effect = QGraphicsBlurEffect(self.pages)
-        self._page_blur_effect.setBlurRadius(0.0)
-        self.pages.setGraphicsEffect(self._page_blur_effect)
+        self._page_blur_effect = None
         pages_host_layout.addWidget(self.pages)
         pages_shell_layout.addWidget(pages_host)
-        self._page_opacity_effect = QGraphicsOpacityEffect(pages_host)
-        self._page_opacity_effect.setOpacity(1.0)
-        pages_host.setGraphicsEffect(self._page_opacity_effect)
-        overlay = QWidget(pages_shell)
+        self._page_opacity_effect = None
+        overlay = PageTransitionOverlay(body)
         overlay.setObjectName("PageTransitionOverlay")
-        overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        overlay.setStyleSheet("background: transparent;")
-        overlay.hide()
-        overlay_label = QLabel(overlay)
-        overlay_label.setScaledContents(True)
-        overlay_label.setStyleSheet("background: transparent;")
-        overlay_label_blur = QGraphicsBlurEffect(overlay_label)
-        overlay_label_blur.setBlurRadius(0.0)
-        overlay_label.setGraphicsEffect(overlay_label_blur)
-        overlay_opacity = QGraphicsOpacityEffect(overlay)
-        overlay_opacity.setOpacity(1.0)
-        overlay.setGraphicsEffect(overlay_opacity)
         self._page_transition_overlay = overlay
-        self._page_transition_overlay_label = overlay_label
-        self._page_transition_overlay_blur_effect = overlay_label_blur
-        self._page_transition_overlay_opacity_effect = overlay_opacity
+        self._page_transition_overlay_label = None
+        self._page_transition_overlay_next_label = None
+        self._page_transition_overlay_blur_effect = None
+        self._page_transition_overlay_opacity_effect = None
+        self._page_transition_overlay_next_opacity_effect = None
         self._reposition_page_transition_overlay()
         body_layout.addWidget(pages_shell)
         layout.addWidget(body, 1)
@@ -1549,7 +1875,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         page.setProperty("class", "pageRoot")
         root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(0, 0, 0, 12)
         root.setSpacing(4)
 
         top, top_layout = self._card()
@@ -1572,7 +1898,7 @@ class MainWindow(QMainWindow):
         power_block = QWidget()
         power_block.setObjectName("DashboardPowerBlock")
         power_block_layout = QVBoxLayout(power_block)
-        power_block_layout.setContentsMargins(0, 0, 18, 0)
+        power_block_layout.setContentsMargins(0, 0, 0, 0)
         power_block_layout.setSpacing(8)
 
         self.power_aura = PowerAuraWidget(top)
@@ -1664,7 +1990,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         page.setProperty("class", "pageRoot")
         root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(1, 0, 1, 0)
         root.setSpacing(6)
         label = QLabel(self._t("Компоненты", "Components"))
         label.setProperty("class", "title")
@@ -1678,19 +2004,33 @@ class MainWindow(QMainWindow):
         self.components_list.setSpacing(8)
         self.components_list.hide()
         root.addWidget(self.components_list)
+        self._components_scroll = QScrollArea()
+        self._components_scroll.setObjectName("ComponentsScroll")
+        self._components_scroll.setWidgetResizable(True)
+        self._components_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._components_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._components_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._components_cards_root = QWidget()
+        self._components_cards_root.setObjectName("ComponentsCanvas")
         self._components_cards_root.setProperty("class", "pageCanvas")
-        self._components_cards_layout = QHBoxLayout(self._components_cards_root)
-        self._components_cards_layout.setContentsMargins(0, 0, 0, 0)
-        self._components_cards_layout.setSpacing(12)
-        root.addWidget(self._components_cards_root, 1)
+        self._components_cards_layout = QGridLayout(self._components_cards_root)
+        self._components_cards_layout.setContentsMargins(1, 0, 1, 12)
+        self._components_cards_layout.setHorizontalSpacing(12)
+        self._components_cards_layout.setVerticalSpacing(12)
+        self._components_cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._components_cards_layout.setColumnStretch(0, 1)
+        self._components_cards_layout.setColumnStretch(1, 1)
+        self._components_scroll.setWidget(self._components_cards_root)
+        self._register_scroll_fade(self._components_scroll)
+        self._register_smooth_scroll(self._components_scroll)
+        root.addWidget(self._components_scroll, 1)
         return page
 
     def _build_mods_page(self) -> QWidget:
         page = QWidget()
         page.setProperty("class", "pageRoot")
         root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(1, 0, 1, 0)
         root.setSpacing(12)
 
         hero, hero_layout = self._card()
@@ -1764,9 +2104,11 @@ class MainWindow(QMainWindow):
         self.mods_canvas.setObjectName("ModsCanvas")
         self.mods_canvas.setProperty("class", "pageCanvas")
         self.mods_cards_layout = QVBoxLayout(self.mods_canvas)
-        self.mods_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.mods_cards_layout.setContentsMargins(1, 0, 1, 12)
         self.mods_cards_layout.setSpacing(12)
         self.mods_scroll.setWidget(self.mods_canvas)
+        self._register_scroll_fade(self.mods_scroll)
+        self._register_smooth_scroll(self.mods_scroll)
         root.addWidget(self.mods_scroll, 1)
         return page
 
@@ -1774,7 +2116,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         page.setProperty("class", "pageRoot")
         root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(1, 0, 1, 0)
         root.setSpacing(10)
 
         title = QLabel(self._t("Файлы", "Files"))
@@ -1785,14 +2127,27 @@ class MainWindow(QMainWindow):
         stack = QStackedWidget()
         self._file_mode_stack = stack
 
+        chooser_scroll = QScrollArea()
+        chooser_scroll.setWidgetResizable(True)
+        chooser_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        chooser_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        chooser_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        chooser_scroll.setProperty("class", "pageCanvas")
+        chooser_host = QWidget()
+        chooser_host.setProperty("class", "pageCanvas")
+        chooser_host_layout = QVBoxLayout(chooser_host)
+        chooser_host_layout.setContentsMargins(1, 0, 1, 12)
+        chooser_host_layout.setSpacing(0)
+        chooser_host_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
         chooser, chooser_layout = self._card()
-        self._file_home_page = chooser
+        self._file_home_page = chooser_scroll
         chooser_layout.setContentsMargins(14, 10, 14, 14)
         chooser_layout.setSpacing(8)
         intro = QLabel(
             self._t(
-                "Выберите удобный режим: быстрый список доменов, IP-адреса или полноценное редактирование файлов.",
-                "Choose the mode you need: quick domain/IP editing or full file editing.",
+                "Выберите режим: общие и исключающие доменные листы, IP-листы, IP-исключения или полноценное редактирование файлов.",
+                "Choose the mode you need: include/exclude domain lists, IP lists, exclude IPs, or full file editing.",
             )
         )
         intro.setWordWrap(True)
@@ -1817,10 +2172,16 @@ class MainWindow(QMainWindow):
                 "files_exclude.svg",
             ),
             (
-                self._t("IP-адреса", "IP addresses"),
+                self._t("IP-листы", "IP lists"),
+                self._t("Ручной список IP и подсетей, которые нужно добавить в основной IPSet.", "A manual list of IPs and subnets that should be added into the main IPSet."),
+                "all_ips",
+                "files_ip.svg",
+            ),
+            (
+                self._t("IP-исключения", "Exclude IPs"),
                 self._t("Ручной список IP и подсетей, которые нужно исключить из IPSet.", "A manual list of IPs and subnets to exclude from IPSet."),
                 "ips",
-                "files_ip.svg",
+                "files_exclude.svg",
             ),
             (
                 self._t("Редактирование файлов", "Advanced editor"),
@@ -1869,6 +2230,19 @@ class MainWindow(QMainWindow):
             )
         chooser_grid.setColumnStretch(0, 1)
         chooser_grid.setColumnStretch(1, 1)
+        chooser_host_layout.addWidget(chooser)
+        chooser_host_layout.addSpacing(10)
+        reset_btn = QPushButton(self._t("Сбросить все изменения", "Reset all changes"))
+        reset_btn.setProperty("class", "danger")
+        reset_btn.setMinimumHeight(40)
+        reset_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        reset_btn.clicked.connect(self._reset_all_file_overrides)
+        self._attach_button_animations(reset_btn)
+        chooser_host_layout.addWidget(reset_btn)
+        chooser_host_layout.addStretch(1)
+        chooser_scroll.setWidget(chooser_host)
+        self._register_scroll_fade(chooser_scroll)
+        self._register_smooth_scroll(chooser_scroll)
 
         tags_page, tags_layout = self._card()
         self._file_tags_page = tags_page
@@ -1904,9 +2278,19 @@ class MainWindow(QMainWindow):
         tag_flow = FlowLayout(tag_canvas, margin=0, spacing=8)
         tag_canvas.setLayout(tag_flow)
         tag_scroll.setWidget(tag_canvas)
+        self._register_scroll_fade(tag_scroll)
+        self._register_smooth_scroll(tag_scroll)
         self._file_tag_canvas = tag_canvas
         self._file_tag_flow = tag_flow
-        tags_layout.addWidget(tag_scroll, 1)
+        tags_stack = QStackedWidget()
+        tags_loading = QLabel(self._t("Загрузка...", "Loading..."))
+        tags_loading.setProperty("class", "muted")
+        tags_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._files_tags_loading_label = tags_loading
+        self._files_tags_stack = tags_stack
+        tags_stack.addWidget(tags_loading)
+        tags_stack.addWidget(tag_scroll)
+        tags_layout.addWidget(tags_stack, 1)
         advanced_btn = QPushButton(self._t("Открыть редактор файлов", "Open file editor"))
         advanced_btn.clicked.connect(lambda: self._open_files_mode("advanced"))
         tags_layout.addWidget(advanced_btn)
@@ -1914,7 +2298,7 @@ class MainWindow(QMainWindow):
         advanced_page = QWidget()
         self._file_advanced_page = advanced_page
         advanced_root = QVBoxLayout(advanced_page)
-        advanced_root.setContentsMargins(0, 0, 0, 0)
+        advanced_root.setContentsMargins(1, 0, 1, 12)
         advanced_root.setSpacing(12)
         advanced_top = QHBoxLayout()
         advanced_back = QToolButton()
@@ -1940,7 +2324,15 @@ class MainWindow(QMainWindow):
         self.files_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.files_list.setSpacing(8)
         self.files_list.currentItemChanged.connect(self._load_selected_file)
-        left_layout.addWidget(self.files_list)
+        list_stack = QStackedWidget()
+        list_loading = QLabel(self._t("Загрузка файлов...", "Loading files..."))
+        list_loading.setProperty("class", "muted")
+        list_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._files_list_loading_label = list_loading
+        self._files_list_stack = list_stack
+        list_stack.addWidget(list_loading)
+        list_stack.addWidget(self.files_list)
+        left_layout.addWidget(list_stack)
         advanced_split.addWidget(left, 1)
 
         right, right_layout = self._card()
@@ -1962,7 +2354,15 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(path_row)
         self.file_editor = QTextEdit()
         self.file_editor.setObjectName("FileEditor")
-        right_layout.addWidget(self.file_editor, 1)
+        editor_stack = QStackedWidget()
+        editor_loading = QLabel(self._t("Загрузка файла...", "Loading file..."))
+        editor_loading.setProperty("class", "muted")
+        editor_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._files_editor_loading_label = editor_loading
+        self._files_editor_stack = editor_stack
+        editor_stack.addWidget(editor_loading)
+        editor_stack.addWidget(self.file_editor)
+        right_layout.addWidget(editor_stack, 1)
         save_btn = QPushButton(self._t("Сохранить файл", "Save file"))
         save_btn.clicked.connect(self._save_current_file)
         self._attach_button_animations(save_btn)
@@ -1970,7 +2370,7 @@ class MainWindow(QMainWindow):
         advanced_split.addWidget(right, 2)
         advanced_root.addLayout(advanced_split, 1)
 
-        stack.addWidget(chooser)
+        stack.addWidget(chooser_scroll)
         stack.addWidget(tags_page)
         stack.addWidget(advanced_page)
         root.addWidget(stack, 1)
@@ -1980,15 +2380,25 @@ class MainWindow(QMainWindow):
         page = QWidget()
         page.setProperty("class", "pageRoot")
         root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(1, 0, 1, 12)
         root.setSpacing(10)
         top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
         label = QLabel(self._t("Логи", "Logs"))
         label.setProperty("class", "title")
         self._logs_title_label = label
         top.addWidget(label)
+        source_combo = QComboBox()
+        source_combo.setObjectName("LogsSourceCombo")
+        source_combo.setView(QListView())
+        source_combo.currentIndexChanged.connect(self._on_logs_source_changed)
+        self._logs_source_combo = source_combo
+        self._rebuild_logs_source_combo()
+        top.addWidget(source_combo)
         top.addStretch(1)
         refresh_btn = QPushButton(self._t("Обновить", "Refresh"))
+        refresh_btn.setMinimumHeight(36)
+        refresh_btn.setMinimumWidth(112)
         refresh_btn.clicked.connect(self.refresh_logs)
         self._attach_button_animations(refresh_btn)
         self._logs_refresh_btn = refresh_btn
@@ -1996,7 +2406,17 @@ class MainWindow(QMainWindow):
         root.addLayout(top)
         self.logs_text = QTextEdit()
         self.logs_text.setReadOnly(True)
-        root.addWidget(self.logs_text)
+        self._register_scroll_fade(self.logs_text)
+        self._register_smooth_scroll(self.logs_text)
+        logs_stack = QStackedWidget()
+        logs_loading = QLabel(self._t("Загрузка логов...", "Loading logs..."))
+        logs_loading.setProperty("class", "muted")
+        logs_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._logs_loading_label = logs_loading
+        self._logs_stack = logs_stack
+        logs_stack.addWidget(logs_loading)
+        logs_stack.addWidget(self.logs_text)
+        root.addWidget(logs_stack)
         return page
 
     def _setup_tray(self) -> None:
@@ -2025,6 +2445,17 @@ class MainWindow(QMainWindow):
         self._rebuild_tray_menu()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self._active_emoji_popup is not None and self._active_emoji_popup.isVisible():
+            popup_rect = self._active_emoji_popup.geometry()
+            if not popup_rect.contains(event.position().toPoint()):
+                self._active_emoji_popup.close()
+                self._active_emoji_popup = None
+                app = QCoreApplication.instance()
+                if app is not None:
+                    try:
+                        app.removeEventFilter(self)
+                    except Exception:
+                        pass
         if event.button() == Qt.MouseButton.LeftButton and event.position().y() <= 48:
             self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
@@ -2044,7 +2475,7 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Print:
-            event.ignore()
+            super().keyPressEvent(event)
             return
         super().keyPressEvent(event)
 
@@ -2066,9 +2497,19 @@ class MainWindow(QMainWindow):
 
     def _restore_from_tray(self) -> None:
         self._sync_window_icon()
-        self.showNormal()
-        self._mark_dirty("dashboard", "components", "mods", "files", "logs", "tray")
-        _bring_widget_to_front(self)
+        if self._window_opacity_animation is not None:
+            self._window_opacity_animation.stop()
+        self._window_fade_pending_action = None
+        self._skip_next_show_fade = False
+        self._skip_next_show_focus = False
+        self.setWindowOpacity(1.0)
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self._schedule_post_show_sync()
+        QTimer.singleShot(0, lambda: _bring_widget_to_front(self))
 
     def _tray_toggle_master_runtime(self) -> None:
         if self._toggle_in_progress:
@@ -2108,6 +2549,18 @@ class MainWindow(QMainWindow):
     def _exit_application(self) -> None:
         self._force_exit = True
         self._animate_window_fade(showing=False, action="exit")
+
+    def _quit_for_update(self) -> None:
+        self._force_exit = True
+        if self._window_opacity_animation is not None:
+            self._window_opacity_animation.stop()
+        self._window_fade_pending_action = None
+        self.setWindowOpacity(1.0)
+        self.hide()
+        self._shutdown_runtime()
+        app = QCoreApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, app.quit)
 
     def _finalize_exit(self) -> None:
         self._shutdown_runtime()
@@ -2178,7 +2631,7 @@ class MainWindow(QMainWindow):
             states = self._component_states()
         except Exception:
             return False
-        for component_id in ("zapret", "tg-ws-proxy"):
+        for component_id in self._master_active_components():
             state = states.get(component_id)
             if state and state.status == "running":
                 return True
@@ -2196,14 +2649,51 @@ class MainWindow(QMainWindow):
             if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Comma, Qt.Key.Key_Semicolon):
                 self._commit_tag_input()
                 return True
+        if self._active_emoji_popup is not None:
+            if event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
+                popup = self._active_emoji_popup
+                global_pos = event.globalPosition().toPoint()
+                popup_rect = QRect(popup.mapToGlobal(QPoint(0, 0)), popup.size())
+                if not popup_rect.contains(global_pos):
+                    popup.close()
+                    self._active_emoji_popup = None
+                    app = QCoreApplication.instance()
+                    if app is not None:
+                        try:
+                            app.removeEventFilter(self)
+                        except Exception:
+                            pass
+            elif event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Escape:
+                self._active_emoji_popup.close()
+                self._active_emoji_popup = None
+                app = QCoreApplication.instance()
+                if app is not None:
+                    try:
+                        app.removeEventFilter(self)
+                    except Exception:
+                        pass
+                return True
         return super().eventFilter(watched, event)
 
     def _switch_page(self, index: int) -> None:
+        if self._active_emoji_popup is not None:
+            try:
+                self._active_emoji_popup.close()
+            except Exception:
+                pass
+            self._active_emoji_popup = None
+            app = QCoreApplication.instance()
+            if app is not None:
+                try:
+                    app.removeEventFilter(self)
+                except Exception:
+                    pass
         for i, btn in enumerate(self._nav_buttons):
             btn.setChecked(i == index)
         self._sync_nav_highlight(animated=True)
         if index != self.pages.currentIndex():
             self._animate_page_switch(index)
+        self._set_logs_live_enabled(index == 4)
         section_map = {
             0: "dashboard",
             1: "components",
@@ -2228,7 +2718,10 @@ class MainWindow(QMainWindow):
         sidebar.move_highlight(current.geometry(), animated=animated)
 
     def _animate_page_switch(self, index: int) -> None:
-        if self._page_opacity_effect is None:
+        overlay = self._page_transition_overlay
+        pages_shell = self._pages_shell
+        surface = self._content_surface
+        if overlay is None or pages_shell is None or surface is None:
             self.pages.setCurrentIndex(index)
             return
         if self._page_transition_running:
@@ -2236,59 +2729,73 @@ class MainWindow(QMainWindow):
             return
         if self.pages.currentIndex() == index:
             return
-        overlay = self._page_transition_overlay
-        overlay_label = self._page_transition_overlay_label
-        overlay_blur = self._page_transition_overlay_blur_effect
-        overlay_opacity = self._page_transition_overlay_opacity_effect
-        if overlay is None or overlay_label is None or overlay_blur is None or overlay_opacity is None:
-            self.pages.setCurrentIndex(index)
-            return
         self._page_transition_target = index
         self._page_transition_running = True
-        snapshot = self.pages.grab()
-        if snapshot.isNull():
-            self._page_transition_running = False
-            self.pages.setCurrentIndex(index)
-            return
-        self._reposition_page_transition_overlay()
-        overlay_label.setPixmap(snapshot)
-        overlay_blur.setBlurRadius(0.0)
-        overlay_opacity.setOpacity(1.0)
-        if self._page_blur_effect is not None:
-            self._page_blur_effect.setBlurRadius(0.0)
-        self._page_opacity_effect.setOpacity(0.0)
-        overlay.show()
-        overlay.raise_()
-        self.pages.setCurrentIndex(index)
 
-        overlay_fade_anim = QPropertyAnimation(overlay_opacity, b"opacity", self)
-        overlay_fade_anim.setDuration(170)
-        overlay_fade_anim.setStartValue(1.0)
-        overlay_fade_anim.setEndValue(0.0)
-        overlay_fade_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        page_fade_anim = QPropertyAnimation(self._page_opacity_effect, b"opacity", self)
-        page_fade_anim.setDuration(190)
-        page_fade_anim.setStartValue(0.0)
-        page_fade_anim.setEndValue(1.0)
-        page_fade_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        group = QParallelAnimationGroup(self)
-        group.addAnimation(overlay_fade_anim)
-        group.addAnimation(page_fade_anim)
+        self._reposition_page_transition_overlay()
+        old_pixmap = surface.grab()
+        surface_color = _content_surface_color(self.context.settings.get().theme)
+
+        overlay.set_background_color(surface_color)
+        overlay.set_old_pixmap(old_pixmap)
+        overlay.set_new_pixmap(None)
+        overlay.oldOpacity = 1.0
+        overlay.newOpacity = 0.0
+        overlay.raise_()
+        overlay.show()
+        pages_shell.hide()
+
+        fade_out = QPropertyAnimation(overlay, b"oldOpacity", self)
+        fade_out.setDuration(130)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.0)
+        fade_out.setEasingCurve(QEasingCurve.Type.InCubic)
 
         def _finish() -> None:
+            pages_shell.show()
             overlay.hide()
-            overlay_label.clear()
-            overlay_blur.setBlurRadius(0.0)
-            overlay_opacity.setOpacity(1.0)
-            self._page_opacity_effect.setOpacity(1.0)
+            overlay.set_background_color(QColor(0, 0, 0, 0))
+            overlay.clear_transition()
             self._page_transition_running = False
             if self._page_transition_target != self.pages.currentIndex():
                 self._animate_page_switch(self._page_transition_target)
 
-        group.finished.connect(_finish)
-        self._page_transition_out = overlay_fade_anim
-        self._page_transition_in = page_fade_anim
-        group.start()
+        def _start_fade_in() -> None:
+            self.pages.setCurrentIndex(index)
+            current_widget = self.pages.currentWidget()
+            if current_widget is not None and current_widget.layout() is not None:
+                current_widget.layout().activate()
+            if index == 0:
+                self._sync_power_aura_geometry()
+            elif index == 1:
+                self._sync_component_card_layout()
+                QTimer.singleShot(0, self._sync_component_card_layout)
+                QTimer.singleShot(80, self._sync_component_card_layout)
+            self.pages.updateGeometry()
+            pages_shell.updateGeometry()
+            surface.updateGeometry()
+            self._reposition_page_transition_overlay()
+            pages_shell.show()
+            self.pages.repaint()
+            pages_shell.repaint()
+            surface.repaint()
+            QCoreApplication.processEvents()
+            new_pixmap = surface.grab()
+            pages_shell.hide()
+            overlay.set_old_pixmap(None)
+            overlay.set_new_pixmap(new_pixmap)
+            fade_in.start()
+
+        fade_in = QPropertyAnimation(overlay, b"newOpacity", self)
+        fade_in.setDuration(150)
+        fade_in.setStartValue(0.0)
+        fade_in.setEndValue(1.0)
+        fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+        fade_out.finished.connect(_start_fade_in)
+        fade_in.finished.connect(_finish)
+        self._page_transition_out = fade_out
+        self._page_transition_in = fade_in
+        fade_out.start()
 
     def _animate_window_fade(self, *, showing: bool, action: str | None = None) -> None:
         if self._window_opacity_animation is not None:
@@ -2350,6 +2857,32 @@ class MainWindow(QMainWindow):
     def _apply_settings_payload(self, before, payload: dict[str, object]) -> None:
         self._submit_backend_task("apply_settings", payload, action_id="__settings__")
 
+    def _run_settings_diagnostics_popup(self) -> None:
+        if self._settings_diag_task_id:
+            return
+        dialog = AppDialog(self, self.context, self._t("Подобрать настройки", "Find best settings"))
+        label = QLabel(
+            self._t(
+                "Сейчас приложение проверит разные комбинации IPSet mode и Gaming mode для выбранной конфигурации.",
+                "The app will now test different IPSet mode and Gaming mode combinations for the selected configuration.",
+            )
+        )
+        label.setWordWrap(True)
+        dialog.body_layout.addWidget(label)
+        status = QLabel(self._t("Подготовка...", "Preparing..."))
+        status.setProperty("class", "muted")
+        dialog.body_layout.addWidget(status)
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        dialog.body_layout.addWidget(bar)
+        dialog.prepare_and_center()
+        dialog.show()
+        self._settings_diag_dialog = dialog
+        self._settings_diag_status_label = status
+        self._settings_diag_progress_bar = bar
+        self._settings_diag_task_id = self._submit_backend_task("run_settings_diagnostics", action_id="__settings_diag__")
+
     def _prime_cached_dialogs(self) -> None:
         if self._launch_hidden:
             return
@@ -2372,7 +2905,7 @@ class MainWindow(QMainWindow):
         payload = message.get("payload", {})
         self.context.settings.reload()
         self._update_runtime_snapshot_from_payload(payload)
-        if action in {"toggle_mod", "apply_settings", "select_general", "toggle_component_enabled"}:
+        if action in {"toggle_mod", "apply_settings", "select_general", "toggle_component_enabled", "move_mod", "set_mod_emoji", "update_zapret_runtime"}:
             self._invalidate_general_options_cache()
             self._page_payload_cache.clear()
         if action == "apply_settings":
@@ -2403,11 +2936,31 @@ class MainWindow(QMainWindow):
         if action == "toggle_mod":
             self._mark_dirty("dashboard", "mods", "files", "logs", "tray")
             return
+        if action in {"move_mod", "set_mod_emoji"}:
+            self._mark_dirty("mods", "components", "files")
+            return
         if action == "restart_zapret_if_running":
             self._mark_dirty("dashboard", "components", "tray")
             return
         if action == "run_general_diagnostics":
             self._ui_signals.general_test_done.emit(payload.get("results", []))
+            return
+        if action == "run_general_diagnostic_single":
+            self._ui_signals.general_test_done.emit(payload)
+            return
+        if action == "run_settings_diagnostics":
+            self._show_settings_diagnostics_result(payload)
+            return
+        if action == "update_zapret_runtime":
+            status = str(payload.get("status", ""))
+            if status == "up-to-date":
+                self._show_info("Zapret", self._t("Уже установлена последняя версия Zapret.", "The latest Zapret version is already installed."))
+            elif status == "updated":
+                self._show_info("Zapret", self._t("Zapret успешно обновлён.", "Zapret was updated successfully."))
+            else:
+                self._show_error("Zapret", str(payload.get("error", self._t("Не удалось обновить Zapret.", "Failed to update Zapret."))))
+            self._mark_dirty("dashboard", "components", "files", "logs")
+            return
 
     def _on_backend_task_failed(self, message: dict) -> None:
         task_id = str(message.get("id", ""))
@@ -2422,7 +2975,7 @@ class MainWindow(QMainWindow):
             self._ui_signals.component_action_done.emit("__settings__")
         if action in {"toggle_component_enabled", "toggle_component_autostart"}:
             self._ui_signals.component_action_done.emit(action_id)
-        if action == "run_general_diagnostics":
+        if action in {"run_general_diagnostics", "run_general_diagnostic_single"}:
             self._general_test_running = False
             self._general_test_task_id = None
             self._general_test_eta_timer.stop()
@@ -2432,7 +2985,42 @@ class MainWindow(QMainWindow):
             self._general_test_status_label = None
             self._general_test_eta_label = None
             self._general_test_progress_bar = None
+        if action == "run_settings_diagnostics":
+            self._settings_diag_task_id = None
+            if self._settings_diag_dialog is not None:
+                self._settings_diag_dialog.reject()
+            self._settings_diag_dialog = None
+            self._settings_diag_status_label = None
+            self._settings_diag_progress_bar = None
         self._show_error("Zapret Hub", error)
+
+    def _show_settings_diagnostics_result(self, payload: object) -> None:
+        self._settings_diag_task_id = None
+        if self._settings_diag_dialog is not None:
+            self._settings_diag_dialog.accept()
+        self._settings_diag_dialog = None
+        self._settings_diag_status_label = None
+        self._settings_diag_progress_bar = None
+        if not isinstance(payload, dict):
+            self._show_error(self._t("Подобрать настройки", "Find best settings"), self._t("Не удалось получить результаты.", "Failed to get results."))
+            return
+        best = payload.get("best") if isinstance(payload.get("best"), dict) else None
+        if not best or int(best.get("passed_targets", 0) or 0) <= 0:
+            self._show_info(
+                self._t("Подобрать настройки", "Find best settings"),
+                self._t(
+                    "Не удалось подобрать устойчивые настройки. Сначала запустите проверку конфигураций и выберите рабочую конфигурацию, затем повторите попытку.",
+                    "Could not find stable settings. Run configuration check first, choose a working configuration, and try again.",
+                ),
+            )
+            return
+        self._show_info(
+            self._t("Подобрать настройки", "Find best settings"),
+            self._t(
+                f"Лучшая комбинация:\nIPSet mode: {best.get('ipset_mode')}\nGaming mode: {best.get('game_mode')}\nУспешно: {best.get('passed_targets')}/{best.get('total_targets')}\nВремя: {best.get('elapsed')} сек.",
+                f"Best combination:\nIPSet mode: {best.get('ipset_mode')}\nGaming mode: {best.get('game_mode')}\nPassed: {best.get('passed_targets')}/{best.get('total_targets')}\nTime: {best.get('elapsed')}s.",
+            ),
+        )
 
     def _on_backend_task_progress(self, message: dict) -> None:
         action = str(message.get("action", ""))
@@ -2443,6 +3031,25 @@ class MainWindow(QMainWindow):
                 int(payload.get("total", 0) or 0),
                 str(payload.get("name", "") or ""),
             )
+        if action == "run_general_diagnostic_single" and isinstance(payload, dict):
+            self._ui_signals.general_test_progress.emit(
+                int(payload.get("current", 0) or 0),
+                int(payload.get("total", 0) or 0),
+                str(payload.get("name", "") or ""),
+            )
+        if action == "run_settings_diagnostics" and isinstance(payload, dict):
+            if self._settings_diag_progress_bar is not None:
+                total = max(1, int(payload.get("total", 1) or 1))
+                current = max(0, min(total, int(payload.get("current", 0) or 0)))
+                self._settings_diag_progress_bar.setMaximum(total)
+                self._settings_diag_progress_bar.setValue(current)
+            if self._settings_diag_status_label is not None:
+                self._settings_diag_status_label.setText(
+                    self._t(
+                        f"Проверяется: {str(payload.get('name', '') or '')}",
+                        f"Checking: {str(payload.get('name', '') or '')}",
+                    )
+                )
 
     def _apply_theme(self) -> None:
         theme = self.context.settings.get().theme
@@ -2460,8 +3067,20 @@ class MainWindow(QMainWindow):
         for btn in self._nav_buttons:
             if isinstance(btn, AnimatedNavButton):
                 btn.set_nav_theme(theme)
+        for overlay in self._scroll_fade_overlays:
+            overlay.set_theme(theme)
+            overlay._sync_state()
         self._sync_nav_highlight(animated=False)
         self._apply_titlebar_icons(theme)
+
+    def _register_scroll_fade(self, scrollable: QAbstractScrollArea) -> ScrollFadeOverlay:
+        overlay = ScrollFadeOverlay(scrollable)
+        overlay.set_theme(self.context.settings.get().theme)
+        self._scroll_fade_overlays.append(overlay)
+        return overlay
+
+    def _register_smooth_scroll(self, scrollable: QAbstractScrollArea) -> None:
+        self._smooth_scroll_helpers.append(SmoothScrollController(scrollable))
 
     def _apply_titlebar_icons(self, theme: str) -> None:
         if self._min_btn is None or self._close_btn is None:
@@ -2520,8 +3139,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "mods_import_hint") and self.mods_import_hint is not None:
             self.mods_import_hint.setText(
                 self._t(
-                    "Можно добавить папку, ZIP, отдельные файлы или целый GitHub-репозиторий. Приложение само заберет только совместимые файлы.",
-                    "You can add a folder, ZIP, selected files, or a full GitHub repository. The app will keep only compatible files.",
+                    "Можно добавить папку, ZIP, отдельные файлы или целый GitHub-репозиторий. Приложение само заберет general-файлы, списки и совместимые runtime-конфиги.",
+                    "You can add a folder, ZIP, selected files, or a full GitHub repository. The app will keep general files, lists, and compatible runtime configs.",
                 )
             )
         if self._files_title_label is not None:
@@ -2529,8 +3148,8 @@ class MainWindow(QMainWindow):
         if self._files_intro_label is not None:
             self._files_intro_label.setText(
                 self._t(
-                    "Выберите удобный режим: быстрый список доменов, IP-адреса или полноценное редактирование файлов.",
-                    "Choose the mode you need: quick domain/IP editing or full file editing.",
+                    "Выберите режим: общие и исключающие доменные листы, IP-листы, IP-исключения или полноценное редактирование файлов.",
+                    "Choose the mode you need: include/exclude domain lists, IP lists, exclude IPs, or full file editing.",
                 )
             )
         file_mode_texts = {
@@ -2548,8 +3167,15 @@ class MainWindow(QMainWindow):
                     "A separate list of domains that should be excluded from rules.",
                 ),
             ),
+            "all_ips": (
+                self._t("IP-листы", "IP lists"),
+                self._t(
+                    "Ручной список IP и подсетей, которые нужно добавить в основной IPSet.",
+                    "A manual list of IPs and subnets that should be added into the main IPSet.",
+                ),
+            ),
             "ips": (
-                self._t("IP-адреса", "IP addresses"),
+                self._t("IP-исключения", "Exclude IPs"),
                 self._t(
                     "Ручной список IP и подсетей, которые нужно исключить из IPSet.",
                     "A manual list of IPs and subnets to exclude from IPSet.",
@@ -2578,6 +3204,7 @@ class MainWindow(QMainWindow):
             self._editor_title_label.setText(self._t("Редактор", "Editor"))
         if self._logs_title_label is not None:
             self._logs_title_label.setText(self._t("Логи", "Logs"))
+        self._rebuild_logs_source_combo()
         if self._logs_refresh_btn is not None:
             self._logs_refresh_btn.setText(self._t("Обновить", "Refresh"))
 
@@ -2616,6 +3243,159 @@ class MainWindow(QMainWindow):
         label = name if not bundle else f"({bundle}) {name}"
         return f"★ {label}" if favorite else label
 
+    def _available_mod_emojis(self) -> list[str]:
+        return ["✨", "🪄", "🔥", "⚡", "🧩", "🎮", "🌐", "🛡️", "🚀", "💎", "📦", "🧪"]
+
+    def _resolve_mod_emoji(self, mod_id: str, emoji: str) -> str:
+        if mod_id == "unified-by-goshkow":
+            return "🪄"
+        if emoji in self._available_mod_emojis():
+            return emoji
+        return self._available_mod_emojis()[abs(hash(mod_id)) % len(self._available_mod_emojis())]
+
+    def _mod_badge_palette(self, emoji: str) -> tuple[str, str, str]:
+        palettes = {
+            "✨": ("#3b3115", "#d0b14d", "#fff5c7"),
+            "🪄": ("#2a2444", "#7562df", "#f0ebff"),
+            "🔥": ("#3b231f", "#cf6f4b", "#ffe7dd"),
+            "⚡": ("#3a311b", "#cfa84d", "#fff2cc"),
+            "🧩": ("#18343a", "#4ba1b3", "#dff9ff"),
+            "🎮": ("#302345", "#8d69da", "#f1e6ff"),
+            "🌐": ("#1b3248", "#4d88d8", "#e4f1ff"),
+            "🛡️": ("#203544", "#5f8fb4", "#e7f6ff"),
+            "🚀": ("#35243d", "#b16ac8", "#fdeaff"),
+            "💎": ("#173945", "#5cc6da", "#e3fcff"),
+            "📦": ("#3a2d1f", "#c49858", "#fff0db"),
+            "🧪": ("#233b2d", "#78c48a", "#e7fff0"),
+        }
+        return palettes.get(emoji, palettes["🪄"])
+
+    def _mod_badge_offset(self, emoji: str) -> tuple[float, float]:
+        if emoji == "🎮":
+            return 0.0, -1.0
+        return 0.0, 0.0
+
+    def _theme_adjusted_badge_palette(self, bg: str, border: str, fg: str) -> tuple[str, str, str]:
+        theme = self.context.settings.get().theme
+        if not is_light_theme(theme):
+            return bg, border, fg
+        bg_color = QColor(bg)
+        border_color = QColor(border)
+        fg_color = QColor(fg)
+        bg_color = bg_color.lighter(168 if theme == "light" else 160)
+        bg_color.setAlpha(235 if theme == "light" else 222)
+        border_color = border_color.lighter(130)
+        fg_color = fg_color.darker(145)
+        return bg_color.name(QColor.NameFormat.HexArgb), border_color.name(), fg_color.name()
+
+    def _emoji_popup_palette(self) -> tuple[str, str, str, str, str]:
+        theme = self.context.settings.get().theme
+        if theme == "light":
+            return "#f5f8fe", "#c8d7ee", "#152033", "#e6eefb", "#d6e4fa"
+        if theme == "light blue":
+            return "#edf6ff", "#bfd6f4", "#16324f", "#dcecff", "#d0e6fb"
+        if theme == "oled":
+            return "#111317", "#2b3138", "#eef3ff", "#1b2028", "#263041"
+        if theme == "dark":
+            return "#1a1d23", "#3d4655", "#eef2fb", "#242a34", "#2b3340"
+        return "#141f32", "#304463", "#eef2fb", "#1d2740", "#273349"
+
+    def _open_mod_emoji_menu(self, mod_id: str, button: QToolButton) -> None:
+        if mod_id == "unified-by-goshkow":
+            return
+        if self._active_emoji_popup is not None:
+            try:
+                self._active_emoji_popup.close()
+            except Exception:
+                pass
+            self._active_emoji_popup = None
+        popup = QFrame(self)
+        popup.setWindowFlags(Qt.WindowType.SubWindow | Qt.WindowType.FramelessWindowHint)
+        popup.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        bg, border, fg, hover, selected = self._emoji_popup_palette()
+        popup.setStyleSheet("QFrame { background: transparent; border: none; }")
+        outer = QVBoxLayout(popup)
+        outer.setContentsMargins(6, 6, 6, 6)
+        frame = QFrame(popup)
+        frame.setStyleSheet(
+            f"background: {bg}; border: 1px solid {border}; border-radius: 14px;"
+        )
+        outer.addWidget(frame)
+        layout = QGridLayout(frame)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(8)
+        current = ""
+        for item in self.context.mods.list_installed():
+            if item.id == mod_id:
+                current = self._resolve_mod_emoji(mod_id, getattr(item, "emoji", "") or "")
+                break
+        for index, emoji in enumerate(self._available_mod_emojis()):
+            emoji_btn = QToolButton(frame)
+            emoji_btn.setText(emoji)
+            emoji_btn.setCheckable(True)
+            emoji_btn.setChecked(emoji == current)
+            emoji_btn.setStyleSheet(
+                "QToolButton {"
+                f"min-width: 44px; min-height: 44px; max-width: 44px; max-height: 44px;"
+                f"border-radius: 12px; background: transparent; border: 1px solid transparent;"
+                f"font-size: 20px; color: {fg};"
+                "}"
+                "QToolButton:hover {"
+                f"background: {hover}; border: 1px solid {border}; border-radius: 12px;"
+                "}"
+                "QToolButton:checked {"
+                f"background: {selected}; border: 1px solid {border}; border-radius: 12px;"
+                "}"
+            )
+            emoji_btn.clicked.connect(lambda _=False, mid=mod_id, e=emoji, dlg=popup: self._set_mod_emoji_immediate(mid, e, dlg))
+            layout.addWidget(emoji_btn, index // 4, index % 4)
+        popup.adjustSize()
+        local_pos = self.mapFromGlobal(button.mapToGlobal(button.rect().bottomLeft()))
+        popup.move(local_pos + QPoint(-4, 6))
+        popup.raise_()
+        popup.destroyed.connect(lambda *_: setattr(self, "_active_emoji_popup", None))
+        self._active_emoji_popup = popup
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        popup.show()
+
+    def _set_mod_emoji_immediate(self, mod_id: str, emoji: str, popup: QWidget | None = None) -> None:
+        try:
+            self.context.mods.set_emoji(mod_id, emoji)
+            payload = {
+                "index": self.context.mods.fetch_index(),
+                "installed": list(self.context.mods.list_installed()),
+            }
+            self.refresh_mods(payload)
+        except Exception as error:
+            self._show_error(self._t("Модификации", "Mods"), str(error))
+        finally:
+            if popup is not None:
+                popup.close()
+            self._active_emoji_popup = None
+            app = QCoreApplication.instance()
+            if app is not None:
+                try:
+                    app.removeEventFilter(self)
+                except Exception:
+                    pass
+
+    def _move_mod(self, mod_id: str, direction: int) -> None:
+        try:
+            installed = self.context.mods.move(mod_id, direction)
+            self._invalidate_general_options_cache()
+            payload = {
+                "index": self.context.mods.fetch_index(),
+                "installed": installed,
+            }
+            self.refresh_mods(payload)
+            self.refresh_components()
+            self._mark_dirty("files", "dashboard", "tray")
+        except Exception as error:
+            self._show_error(self._t("Модификации", "Mods"), str(error))
+
     def _favorite_general_ids(self) -> list[str]:
         return list(self.context.settings.get().favorite_zapret_generals or [])
 
@@ -2638,11 +3418,17 @@ class MainWindow(QMainWindow):
             self._general_options_cache = self.context.processes.list_zapret_generals()
         options = list(self._general_options_cache)
         favorites = {item for item in self._favorite_general_ids() if item}
+        installed_order = {
+            item.id: index
+            for index, item in enumerate(self.context.mods.list_installed())
+            if getattr(item, "enabled", False)
+        }
         return sorted(
             options,
             key=lambda item: (
                 0 if item["id"] in favorites else 1,
-                (item.get("bundle") or "").lower(),
+                2 if str(item.get("bundle_id", "")) == "base" else 1,
+                installed_order.get(str(item.get("bundle_id", "")), 9999),
                 (item.get("name") or "").lower(),
             ),
         )
@@ -2802,17 +3588,24 @@ class MainWindow(QMainWindow):
             return
         if mode == "home":
             self._file_mode_stack.setCurrentIndex(0)
+            self._set_files_mode_loading(False)
             return
         if mode == "advanced":
             self._file_mode_stack.setCurrentIndex(2)
-            self._mark_dirty("files")
+            self.file_path_label.setText(self._t("Загрузка файлов...", "Loading files..."))
+            self.file_editor.clear()
+            self.files_list.clear()
+            self._set_files_mode_loading(True)
+            self._request_page_refresh("files")
             return
         self._current_file_collection = mode
-        self._refresh_file_collection_view()
         self._file_mode_stack.setCurrentIndex(1)
+        self._set_files_mode_loading(True)
+        self._refresh_file_collection_view_with_values([])
+        self._request_page_refresh("files")
 
     def _refresh_file_collection_view(self) -> None:
-        self._refresh_file_collection_view_with_values(None)
+        self._refresh_file_collection_view_with_values(self._current_file_values_cache)
 
     def _refresh_file_collection_view_with_values(self, values: list[str] | None) -> None:
         titles = {
@@ -2830,8 +3623,15 @@ class MainWindow(QMainWindow):
                     "Here you can list domains that should be excluded from Zapret rules.",
                 ),
             ),
+            "all_ips": (
+                self._t("IP-листы", "IP lists"),
+                self._t(
+                    "Здесь можно указать IP-адреса и подсети, которые должны попадать в основной IPSet.",
+                    "Here you can list IP addresses and subnets that should be included in the main IPSet.",
+                ),
+            ),
             "ips": (
-                self._t("IP-адреса", "IP addresses"),
+                self._t("IP-исключения", "Exclude IPs"),
                 self._t(
                     "Добавляйте IP-адреса и подсети, которые нужно исключить из IPSet.",
                     "Add IP addresses and subnets that should be excluded from IPSet.",
@@ -2845,6 +3645,10 @@ class MainWindow(QMainWindow):
             self._file_tag_subtitle.setText(subtitle)
         if self._file_tag_input is not None:
             placeholder = self._t("Введите значение и нажмите Enter", "Type a value and press Enter")
+            if self._current_file_collection in {"domains", "exclude_domains"}:
+                placeholder = self._t("Введите домен и нажмите Enter", "Type a domain and press Enter")
+            elif self._current_file_collection in {"all_ips", "ips"}:
+                placeholder = self._t("Введите IP или подсеть и нажмите Enter", "Type an IP or subnet and press Enter")
             self._file_tag_input.setPlaceholderText(placeholder)
             self._file_tag_input.clear()
         self._render_file_tags(values)
@@ -2857,7 +3661,7 @@ class MainWindow(QMainWindow):
             widget = item.widget() if item is not None else None
             if widget is not None:
                 widget.deleteLater()
-        resolved_values = list(values if values is not None else self.context.files.read_collection(self._current_file_collection))
+        resolved_values = list(values if values is not None else self._current_file_values_cache)
         self._current_file_values_cache = resolved_values
         for value in resolved_values:
             chip = QFrame()
@@ -2866,12 +3670,13 @@ class MainWindow(QMainWindow):
             chip_layout.setContentsMargins(10, 6, 8, 6)
             chip_layout.setSpacing(8)
             label = QLabel(value)
-            remove_btn = QToolButton()
-            remove_btn.setProperty("class", "action")
-            remove_btn.setText("×")
-            remove_btn.clicked.connect(lambda _=False, item=value: self._remove_file_tag(item))
             chip_layout.addWidget(label)
-            chip_layout.addWidget(remove_btn)
+            if not self.context.files.is_managed_collection_value(self._current_file_collection, value):
+                remove_btn = QToolButton()
+                remove_btn.setProperty("class", "action")
+                remove_btn.setText("×")
+                remove_btn.clicked.connect(lambda _=False, item=value: self._remove_file_tag(item))
+                chip_layout.addWidget(remove_btn)
             self._file_tag_flow.addWidget(chip)
         if self._file_tag_canvas is not None:
             self._file_tag_canvas.adjustSize()
@@ -2882,14 +3687,29 @@ class MainWindow(QMainWindow):
         raw = self._file_tag_input.text().strip()
         if not raw:
             return
-        self.context.files.add_collection_values(self._current_file_collection, raw)
+        values = self.context.files.add_collection_values(self._current_file_collection, raw)
         self._file_tag_input.clear()
-        self._render_file_tags()
+        self._render_file_tags(values)
         self._restart_zapret_if_running()
 
     def _remove_file_tag(self, value: str) -> None:
-        self.context.files.remove_collection_value(self._current_file_collection, value)
-        self._render_file_tags()
+        values = self.context.files.remove_collection_value(self._current_file_collection, value)
+        self._render_file_tags(values)
+        self._restart_zapret_if_running()
+
+    def _reset_all_file_overrides(self) -> None:
+        confirmed = self._ask_yes_no(
+            self._t("Сбросить изменения", "Reset changes"),
+            self._t(
+                "Точно вы хотите сбросить все изменения? Это удалит все пользовательские правки, сделанные в разделе Файлы.",
+                "Are you sure you want to reset all changes? This will remove all user edits made in the Files section.",
+            ),
+        )
+        if not confirmed:
+            return
+        self.context.files.reset_user_overrides()
+        self._current_file_values_cache = []
+        self._request_page_refresh("files")
         self._restart_zapret_if_running()
 
     def _restart_zapret_if_running(self) -> None:
@@ -3028,6 +3848,7 @@ class MainWindow(QMainWindow):
             self.refresh_all()
 
     def _import_mod_any(self) -> None:
+        previous_selected_general = str(self.context.settings.get().selected_zapret_general or "")
         chooser = AppDialog(self, self.context, self._t("Добавить модификацию", "Add modification"))
         chooser.setMinimumWidth(520)
         chooser_text = QLabel(
@@ -3107,6 +3928,8 @@ class MainWindow(QMainWindow):
                 return
             try:
                 self.context.mods.import_from_github(repo_url)
+                if previous_selected_general:
+                    self.context.settings.update(selected_zapret_general=previous_selected_general)
                 self._invalidate_general_options_cache()
                 self.refresh_all()
             except Exception as error:
@@ -3117,6 +3940,8 @@ class MainWindow(QMainWindow):
             return
         try:
             self.context.mods.import_from_paths(paths)
+            if previous_selected_general:
+                self.context.settings.update(selected_zapret_general=previous_selected_general)
             self._invalidate_general_options_cache()
             self.refresh_all()
         except Exception as error:
@@ -3309,12 +4134,15 @@ class MainWindow(QMainWindow):
         except Exception as error:
             self._show_error(self._t("Обновления", "Updates"), str(error))
             return
-        self._force_exit = True
-        self.close()
+        self._quit_for_update()
 
     def _run_diagnostics_popup(self) -> None:
         results = self.context.diagnostics.run_all()
-        text = "\n".join(f"{item.name}: {item.status}" for item in results)
+        text = "\n".join(
+            f"{item.name}: {item.status}"
+            + (f" ({item.message})" if getattr(item, "message", "") else "")
+            for item in results
+        )
         self._show_info(self._t("Диагностика", "Diagnostics"), text or self._t("Нет данных диагностики.", "No diagnostics data."))
 
     def _load_selected_file(self, *_args: object) -> None:
@@ -3324,7 +4152,7 @@ class MainWindow(QMainWindow):
         item = self.files_list.currentItem()
         label_text = item.text().split("\n")[0] if item else full_path
         self.file_path_label.setText(label_text)
-        self.file_editor.setPlainText(self.context.files.read_text(full_path))
+        self._request_file_content(full_path)
 
     def _save_current_file(self) -> None:
         full_path = self._selected_file_path()
@@ -3354,7 +4182,8 @@ class MainWindow(QMainWindow):
         try:
             path.rename(target)
             self.context.logging.log("info", "File renamed", source=str(path), target=str(target))
-            self.refresh_files()
+            self._set_files_mode_loading(True)
+            self._request_page_refresh("files")
             self.refresh_logs()
         except Exception as error:
             self._show_error(self._t("Файлы", "Files"), f"{self._t('Не удалось переименовать файл', 'Failed to rename file')}:\n{error}")
@@ -3417,6 +4246,25 @@ class MainWindow(QMainWindow):
         self.schedule_refresh_all()
 
     def _request_page_refresh(self, section: str) -> None:
+        if section == "files":
+            self._files_refresh_token += 1
+            token = self._files_refresh_token
+            mode_index = self._file_mode_stack.currentIndex() if self._file_mode_stack is not None else 0
+            collection_id = self._current_file_collection
+            cached = self._page_payload_cache.get(section)
+            if isinstance(cached, dict):
+                cached_token = int(cached.get("_token", 0) or 0)
+                cached_mode = int(cached.get("mode_index", -1) or -1)
+                cached_collection = str(cached.get("collection_id", "") or "")
+                if cached_token == token and cached_mode == mode_index and cached_collection == collection_id:
+                    self.refresh_files(cached)
+            thread = threading.Thread(
+                target=self._collect_files_payload_worker,
+                args=(token, mode_index, collection_id),
+                daemon=True,
+            )
+            thread.start()
+            return
         cached = self._page_payload_cache.get(section)
         if cached is not None:
             if section == "components":
@@ -3433,6 +4281,19 @@ class MainWindow(QMainWindow):
         thread = threading.Thread(target=self._collect_page_payload_worker, args=(section,), daemon=True)
         thread.start()
 
+    def _collect_files_payload_worker(self, token: int, mode_index: int, collection_id: str) -> None:
+        try:
+            payload = {
+                "_token": token,
+                "mode_index": mode_index,
+                "collection_id": collection_id,
+                "records": self.context.files.list_files() if mode_index == 2 else None,
+                "collection_values": self.context.files.read_collection(collection_id) if mode_index == 1 else None,
+            }
+            self._ui_signals.page_payload_ready.emit("files", payload)
+        except Exception:
+            self._ui_signals.page_payload_ready.emit("files", {"_token": token, "mode_index": mode_index, "collection_id": collection_id, "records": None, "collection_values": None})
+
     def _collect_page_payload_worker(self, section: str) -> None:
         try:
             payload: object
@@ -3444,25 +4305,53 @@ class MainWindow(QMainWindow):
             elif section == "mods":
                 payload = {
                     "index": self.context.mods.fetch_index(),
-                    "installed": {item.id: item for item in self.context.mods.list_installed()},
+                    "installed": list(self.context.mods.list_installed()),
                 }
             elif section == "files":
+                mode_index = self._file_mode_stack.currentIndex() if self._file_mode_stack is not None else 0
+                collection_id = self._current_file_collection
                 payload = {
-                    "records": self.context.files.list_files(),
-                    "collection_values": self.context.files.read_collection(self._current_file_collection),
-                    "collection_id": self._current_file_collection,
+                    "records": self.context.files.list_files() if mode_index == 2 else None,
+                    "collection_values": self.context.files.read_collection(collection_id) if mode_index == 1 else None,
+                    "collection_id": collection_id,
+                    "mode_index": mode_index,
                 }
             elif section == "logs":
-                entries = self.context.logging.read_entries()
-                payload = [f"[{e.timestamp}] {e.level}: {e.message} {e.context}" for e in entries[-250:]]
+                source_id = self._current_log_source
+                payload = {
+                    "source": source_id,
+                    "lines": self.context.logging.read_source_lines(source_id),
+                }
             else:
                 payload = None
             self._ui_signals.page_payload_ready.emit(section, payload)
         except Exception:
             self._ui_signals.page_payload_ready.emit(section, None)
 
+    def _collect_file_content_worker(self, token: int, full_path: str) -> None:
+        try:
+            payload = {
+                "_token": token,
+                "path": full_path,
+                "content": self.context.files.read_text(full_path),
+            }
+            self._ui_signals.page_payload_ready.emit("file_content", payload)
+        except Exception:
+            self._ui_signals.page_payload_ready.emit("file_content", {"_token": token, "path": full_path, "content": ""})
+
     def _on_page_payload_ready(self, section: str, payload: object) -> None:
+        if section == "file_content" and isinstance(payload, dict):
+            if int(payload.get("_token", 0) or 0) != self._file_content_refresh_token:
+                return
+            if str(payload.get("path", "") or "") != self._pending_file_content_path:
+                return
+            self.file_editor.setPlainText(str(payload.get("content", "") or ""))
+            self._set_file_editor_loading(False)
+            return
         self._page_refresh_in_progress.discard(section)
+        if section == "files" and isinstance(payload, dict):
+            if int(payload.get("_token", 0) or 0) != self._files_refresh_token:
+                return
         if payload is not None:
             self._page_payload_cache[section] = payload
             if section == "components":
@@ -3655,7 +4544,7 @@ class MainWindow(QMainWindow):
         self._submit_backend_task("set_favorite_generals", {"favorites": favorites}, action_id="__favorite__")
 
     def _master_active_components(self) -> list[str]:
-        return [c.id for c in self._component_defs().values() if c.id in ("zapret", "tg-ws-proxy") and c.enabled]
+        return [c.id for c in self._component_defs().values() if c.enabled]
 
     def _maybe_run_first_general_autotest(self) -> None:
         settings = self.context.settings.get()
@@ -3722,7 +4611,7 @@ class MainWindow(QMainWindow):
     def _on_component_action_done(self, action_id: str) -> None:
         if action_id == "__settings__":
             self._hide_loading_overlay()
-            self._mark_dirty("dashboard", "components", "tray")
+            self._mark_dirty("dashboard", "components", "files", "tray")
             return
 
         if action_id == "__favorite__":
@@ -3775,8 +4664,15 @@ class MainWindow(QMainWindow):
         self._general_test_auto_apply = auto_apply
         self._general_test_started_at = time.time()
         self._general_test_current_index = 0
-        self._general_test_total = 0
+        self._general_test_total = len(options)
         self._general_test_last_progress_at = self._general_test_started_at
+        self._general_test_options = options
+        self._general_test_results = []
+        self._general_test_next_option_index = 0
+        targets = self.context.processes._load_standard_test_targets()
+        self._general_test_target_budget_seconds = sum(5 if str(item.get("type", "url")) == "url" else 4 for item in targets)
+        self._general_test_remaining_budget_seconds = max(1, int(self._general_test_total * self._general_test_target_budget_seconds * 0.75))
+        self._general_test_found_working_id = ""
         dialog = AppDialog(self, self.context, self._t("Проверка конфигураций", "Run general tests"))
         title = QLabel(
             self._t(
@@ -3805,7 +4701,7 @@ class MainWindow(QMainWindow):
         dialog.rejected.connect(self._cancel_general_tests)
         self._update_general_test_eta()
         self._general_test_eta_timer.start()
-        self._general_test_task_id = self._submit_backend_task("run_general_diagnostics", action_id="__general_test__")
+        self._start_next_general_test()
 
     def _run_general_tests_worker(self) -> None:
         results = self.context.processes.run_general_diagnostics(
@@ -3821,13 +4717,23 @@ class MainWindow(QMainWindow):
         if self.context.backend is not None and self._general_test_task_id:
             self.context.backend.cancel(self._general_test_task_id)
 
+    def _start_next_general_test(self) -> None:
+        if self._general_test_next_option_index >= len(self._general_test_options):
+            self._on_general_test_done(list(self._general_test_results))
+            return
+        option = self._general_test_options[self._general_test_next_option_index]
+        self._general_test_task_id = self._submit_backend_task(
+            "run_general_diagnostic_single",
+            {"general_id": option["id"]},
+            action_id="__general_test__",
+        )
+
     def _on_general_test_progress(self, current: int, total: int, name: str) -> None:
         self._general_test_current_index = current
-        self._general_test_total = total
         self._general_test_last_progress_at = time.time()
         if self._general_test_progress_bar is not None:
-            self._general_test_progress_bar.setMaximum(total)
-            self._general_test_progress_bar.setValue(max(0, min(current, total)))
+            self._general_test_progress_bar.setMaximum(max(1, self._general_test_total))
+            self._general_test_progress_bar.setValue(max(0, min(self._general_test_next_option_index, self._general_test_total)))
         if self._general_test_status_label is not None:
             self._general_test_status_label.setText(
                 self._t(
@@ -3840,26 +4746,73 @@ class MainWindow(QMainWindow):
     def _update_general_test_eta(self) -> None:
         if self._general_test_eta_label is None or self._general_test_total <= 0:
             return
-        if self._general_test_current_index <= 2 or self._general_test_started_at <= 0:
+        if self._general_test_started_at <= 0:
             self._general_test_eta_label.setText(self._t("Расчёт времени...", "Estimating time..."))
             return
-        now = time.time()
-        elapsed = max(0.0, now - self._general_test_started_at)
-        completed = max(1, self._general_test_current_index)
-        avg_per_step = max(0.1, elapsed / completed)
-        in_step_elapsed = max(0.0, now - self._general_test_last_progress_at)
-        in_step_fraction = min(0.95, in_step_elapsed / avg_per_step)
-        effective_completed = min(float(self._general_test_total), completed + in_step_fraction)
-        remaining_after_current = max(0.0, float(self._general_test_total) - effective_completed)
-        estimate_seconds = max(0, round(avg_per_step * remaining_after_current))
+        if self._general_test_running and self._general_test_remaining_budget_seconds > 0:
+            self._general_test_remaining_budget_seconds = max(0, self._general_test_remaining_budget_seconds - 1)
         self._general_test_eta_label.setText(
             self._t(
-                f"Осталось примерно: {estimate_seconds} сек.",
-                f"About {estimate_seconds}s remaining.",
+                f"Осталось примерно: {self._general_test_remaining_budget_seconds} сек.",
+                f"About {self._general_test_remaining_budget_seconds}s remaining.",
             )
         )
 
     def _on_general_test_done(self, results: object) -> None:
+        if isinstance(results, dict) and results.get("id"):
+            self._general_test_task_id = None
+            self._general_test_results.append(results)
+            self._general_test_next_option_index += 1
+            if self._general_test_progress_bar is not None:
+                self._general_test_progress_bar.setMaximum(max(1, self._general_test_total))
+                self._general_test_progress_bar.setValue(self._general_test_next_option_index)
+            passed = int(results.get("passed_targets", 0) or 0)
+            total_targets = int(results.get("total_targets", 0) or 0)
+            self._general_test_remaining_budget_seconds = max(
+                0,
+                self._general_test_remaining_budget_seconds - max(1, int(self._general_test_target_budget_seconds * 0.75)),
+            )
+            if str(results.get("status", "")) == "ok" and not self._general_test_found_working_id:
+                self._general_test_found_working_id = str(results.get("id", ""))
+                dialog = AppDialog(self, self.context, self._t("Конфигурация найдена", "Working configuration found"))
+                label = QLabel(
+                    self._t(
+                        "Найдена полностью рабочая конфигурация. Остановиться и использовать её или продолжить проверку остальных?",
+                        "A fully working configuration has been found. Stop and use it, or continue checking the rest?",
+                    )
+                )
+                label.setWordWrap(True)
+                dialog.body_layout.addWidget(label)
+                row = QHBoxLayout()
+                row.addStretch(1)
+                stop_btn = QPushButton(self._t("Использовать найденный", "Use found config"))
+                cont_btn = QPushButton(self._t("Проверить остальные", "Check the rest"))
+                stop_btn.setProperty("class", "primary")
+                stop_btn.clicked.connect(dialog.accept)
+                cont_btn.clicked.connect(dialog.reject)
+                row.addWidget(cont_btn)
+                row.addWidget(stop_btn)
+                dialog.body_layout.addLayout(row)
+                dialog.prepare_and_center()
+                use_found = dialog.exec() == QDialog.DialogCode.Accepted
+                if use_found:
+                    chosen_id = self._general_test_found_working_id
+                    if chosen_id:
+                        self.context.settings.update(
+                            selected_zapret_general=chosen_id,
+                            general_autotest_done=True,
+                        )
+                        self._set_general_favorite(chosen_id, True)
+                    results = list(self._general_test_results)
+                else:
+                    self._start_next_general_test()
+                    return
+            elif self._general_test_next_option_index < len(self._general_test_options):
+                self._start_next_general_test()
+                return
+            else:
+                results = list(self._general_test_results)
+
         self._general_test_running = False
         self._general_test_task_id = None
         self._general_test_eta_timer.stop()
@@ -4096,8 +5049,7 @@ class MainWindow(QMainWindow):
             empty_text.setWordWrap(True)
             empty_layout.addWidget(empty_title)
             empty_layout.addWidget(empty_text)
-            self._components_cards_layout.addWidget(empty)
-            self._components_cards_layout.addStretch(1)
+            self._components_cards_layout.addWidget(empty, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             return
 
         descriptions = {
@@ -4111,15 +5063,18 @@ class MainWindow(QMainWindow):
             ),
         }
         icons = {"zapret": "component_zapret.svg", "tg-ws-proxy": "component_tg.svg"}
+        component_cards: list[QFrame] = []
 
-        for component in components:
+        for index, component in enumerate(components):
             state = states.get(component.id)
             status_text, _status_icon = self._component_badge_state(component, state, any_running=False)
             display_name = {"zapret": "Zapret", "tg-ws-proxy": "Tg-Ws-Proxy"}.get(component.id, component.name)
             card, card_layout = self._card()
+            card.setMinimumWidth(360)
             card.setMinimumHeight(300)
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             icon = QLabel()
-            icon_size = 38 if component.id == "tg-ws-proxy" else 36
+            icon_size = 38 if component.id in {"tg-ws-proxy"} else 36
             icon.setPixmap(self._icon(icons.get(component.id, "components.svg")).pixmap(icon_size, icon_size))
             icon_row = QHBoxLayout()
             icon_row.setContentsMargins(0, 12, 0, 0)
@@ -4139,7 +5094,7 @@ class MainWindow(QMainWindow):
             card_layout.addWidget(desc)
 
             details = QLabel(
-                f"Author: Flowseal\n"
+                f"Author: {'Flowseal'}\n"
                 f"{self._t('Status', 'Status')}: {status_text}\n"
                 f"{self._t('Version', 'Version')}: {component.version}"
             )
@@ -4203,9 +5158,30 @@ class MainWindow(QMainWindow):
                 card_layout.addWidget(config_status)
 
             if component.id == "tg-ws-proxy":
+                telegram_link = QLabel()
+                telegram_link.setProperty("class", "muted")
+                telegram_link.setText(
+                    f'<a href="{self._telegram_download_url()}">{self._t("Скачать Telegram Desktop", "Download Telegram Desktop")}</a>'
+                )
+                telegram_link.setTextFormat(Qt.TextFormat.RichText)
+                telegram_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+                telegram_link.setOpenExternalLinks(False)
+                telegram_link.linkActivated.connect(self._open_external_url)
+                card_layout.addWidget(telegram_link)
                 connect_btn = QPushButton(self._t("Подключить к Telegram", "Connect to Telegram"))
                 connect_btn.clicked.connect(self._prompt_tg_proxy_connect)
+                self._attach_button_animations(connect_btn)
                 card_layout.addWidget(connect_btn)
+            if component.id == "zapret":
+                update_btn = QPushButton(self._t("Обновить Zapret", "Update Zapret"))
+                update_btn.clicked.connect(self._update_zapret_runtime)
+                self._attach_button_animations(update_btn)
+                card_layout.addWidget(update_btn)
+            if state is not None and getattr(state, "last_error", ""):
+                error_label = QLabel(str(getattr(state, "last_error", "")))
+                error_label.setProperty("class", "muted")
+                error_label.setWordWrap(True)
+                card_layout.addWidget(error_label)
 
             toggle_btn = QPushButton(
                 self._t("Выключить компонент", "Disable component")
@@ -4215,7 +5191,14 @@ class MainWindow(QMainWindow):
             toggle_btn.setProperty("class", "danger" if component.enabled else "primary")
             toggle_btn.clicked.connect(lambda _=False, cid=component.id, btn=toggle_btn: self._toggle_component_card(cid, btn))
             card_layout.addWidget(toggle_btn)
-            self._components_cards_layout.addWidget(card, 1)
+            component_cards.append(card)
+            self._components_cards_layout.addWidget(
+                card,
+                index // 2,
+                index % 2,
+                Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
+            )
+        self._sync_component_card_layout(component_cards)
 
     def _prompt_tg_proxy_connect(self) -> None:
         try:
@@ -4225,6 +5208,51 @@ class MainWindow(QMainWindow):
                 self._t("TG Proxy", "TG Proxy"),
                 f"{self._t('Не удалось открыть запрос на подключение в Telegram.', 'Failed to open Telegram connection prompt.')}\n{error}",
             )
+
+    def _update_zapret_runtime(self) -> None:
+        try:
+            self._submit_backend_task("update_zapret_runtime")
+        except Exception as error:
+            self._show_error("Zapret", str(error))
+
+    def _telegram_download_url(self) -> str:
+        machine = platform.machine().lower()
+        if "arm" in machine or "aarch64" in machine:
+            return "https://github.com/telegramdesktop/tdesktop/releases/latest/download/tsetup-arm64.exe"
+        return "https://github.com/telegramdesktop/tdesktop/releases/latest/download/tsetup-x64.exe"
+
+    def _open_external_url(self, url: str) -> None:
+        if not url:
+            return
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(url)  # type: ignore[attr-defined]
+            else:
+                webbrowser.open(url)
+        except Exception:
+            webbrowser.open(url)
+
+    def _sync_component_card_layout(self, cards: list[QFrame] | None = None) -> None:
+        if self._components_cards_layout is None or self._components_scroll is None:
+            return
+        resolved_cards = cards or [self._components_cards_layout.itemAt(i).widget() for i in range(self._components_cards_layout.count())]
+        widgets = [widget for widget in resolved_cards if isinstance(widget, QFrame)]
+        if not widgets:
+            return
+        viewport = self._components_scroll.viewport()
+        if viewport.height() <= 0:
+            return
+        bottom_margin = self._components_cards_layout.contentsMargins().bottom()
+        available_height = max(320, viewport.height() - bottom_margin)
+        spacing = self._components_cards_layout.verticalSpacing()
+        rows = max(1, (len(widgets) + 1) // 2)
+        if rows == 1:
+            target_height = max(300, available_height - 2)
+        else:
+            target_height = max(300, min(520, int((available_height - max(0, rows - 1) * spacing) / rows) - 4))
+        for widget in widgets:
+            widget.setFixedHeight(target_height)
+        self._components_cards_root.updateGeometry()
 
     def _refresh_mods_legacy(self) -> None:
         index = self.context.mods.fetch_index()
@@ -4304,40 +5332,51 @@ class MainWindow(QMainWindow):
             index = self.context.mods.fetch_index()
         if not installed:
             installed = {item.id: item for item in self.context.mods.list_installed()}
-        combined: list[dict[str, str | bool]] = []
+        combined: list[dict[str, str | bool | int]] = []
+        index_map = {str(_field(item, "id", "") or ""): item for item in index if str(_field(item, "id", "") or "")}
+        installed_items = list(self.context.mods.list_installed()) if not isinstance(payload, dict) else [
+            value for _, value in installed.items()
+        ]
         seen: set[str] = set()
+        for order, installed_item in enumerate(installed_items):
+            mod_id = str(_field(installed_item, "id", "") or "")
+            if not mod_id:
+                continue
+            seen.add(mod_id)
+            indexed = index_map.get(mod_id)
+            enabled = bool(_field(installed_item, "enabled", False))
+            state = "enabled" if enabled else "installed"
+            combined.append(
+                {
+                    "id": mod_id,
+                    "name": str(_field(indexed or installed_item, "name", mod_id) or mod_id),
+                    "description": str(_field(indexed or installed_item, "description", "") or self._t("Локальная модификация без описания.", "Local mod without description.")),
+                    "subtitle": f"{self._t('Автор', 'Author')}: {str(_field(indexed or installed_item, 'author', 'goshkow') or 'goshkow')} | {self._t('Версия', 'Version')}: {str(_field(installed_item, 'version', _field(indexed or installed_item, 'version', '')))}",
+                    "state": state,
+                    "enabled": enabled,
+                    "changelog": str(_field(indexed or installed_item, "changelog", "") or ""),
+                    "emoji": self._resolve_mod_emoji(mod_id, str(_field(installed_item, "emoji", "") or "")),
+                    "installed": True,
+                    "order": order,
+                }
+            )
+
         for item in index:
             item_id = str(_field(item, "id", "") or "")
-            if not item_id:
+            if not item_id or item_id in seen:
                 continue
-            seen.add(item_id)
-            installed_item = installed.get(item_id)
-            enabled = bool(_field(installed_item, "enabled", False)) if installed_item is not None else False
-            state = "enabled" if enabled else ("installed" if item_id in installed else "not installed")
             combined.append(
                 {
                     "id": item_id,
                     "name": str(_field(item, "name", item_id)),
                     "description": str(_field(item, "description", "") or self._t("Описание не указано.", "No description.")),
                     "subtitle": f"{self._t('Автор', 'Author')}: {str(_field(item, 'author', 'goshkow'))} | {self._t('Версия', 'Version')}: {str(_field(item, 'version', ''))}",
-                    "state": state,
-                    "enabled": enabled,
+                    "state": "not installed",
+                    "enabled": False,
                     "changelog": str(_field(item, "changelog", "") or ""),
-                }
-            )
-
-        for mod_id, item in installed.items():
-            if mod_id in seen:
-                continue
-            combined.append(
-                {
-                    "id": mod_id,
-                    "name": str(_field(item, "name", mod_id) or mod_id),
-                    "description": str(_field(item, "description", "") or self._t("Локальная модификация без описания.", "Local mod without description.")),
-                    "subtitle": f"{self._t('Автор', 'Author')}: {str(_field(item, 'author', 'goshkow') or 'goshkow')} | {self._t('Версия', 'Version')}: {str(_field(item, 'version', ''))}",
-                    "state": "enabled" if bool(_field(item, "enabled", False)) else "installed",
-                    "enabled": bool(_field(item, "enabled", False)),
-                    "changelog": "",
+                    "emoji": self._resolve_mod_emoji(item_id, ""),
+                    "installed": False,
+                    "order": 9999,
                 }
             )
 
@@ -4401,17 +5440,35 @@ class MainWindow(QMainWindow):
             card_layout.setContentsMargins(16, 16, 16, 16)
             card_layout.setSpacing(16)
 
+            left_col = QVBoxLayout()
+            left_col.setContentsMargins(0, 0, 0, 0)
+            left_col.setSpacing(10)
+            left_col.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+
             icon_wrap = QFrame()
-            icon_wrap.setProperty("class", "modIconWrap")
-            icon_wrap.setFixedSize(54, 54)
+            icon_wrap.setProperty("class", "")
+            icon_wrap.setFixedSize(60, 60)
+            palette_bg, palette_border, palette_fg = self._mod_badge_palette(str(mod["emoji"]))
+            palette_bg, palette_border, palette_fg = self._theme_adjusted_badge_palette(palette_bg, palette_border, palette_fg)
+            icon_wrap.setStyleSheet(
+                f"QFrame {{ background: {palette_bg}; border: 1px solid {palette_border}; border-radius: 16px; }}"
+            )
             icon_row = QVBoxLayout(icon_wrap)
-            icon_row.setContentsMargins(0, 0, 0, 0)
+            icon_row.setContentsMargins(2, 2, 2, 2)
             icon_row.setSpacing(0)
-            icon_label = QLabel()
-            icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icon_label.setPixmap(self._icon("mods.svg").pixmap(24, 24))
-            icon_row.addWidget(icon_label)
-            card_layout.addWidget(icon_wrap, 0, Qt.AlignmentFlag.AlignTop)
+            emoji_btn = EmojiBadgeButton(str(mod["emoji"]))
+            emoji_btn.setToolTip(self._t("Выбрать эмодзи", "Choose emoji"))
+            emoji_btn.setFixedSize(48, 48)
+            emoji_btn.setStyleSheet("border: none; background: transparent;")
+            emoji_btn.setEmojiColor(palette_fg)
+            badge_dx, badge_dy = self._mod_badge_offset(str(mod["emoji"]))
+            emoji_btn.setEmojiOffset(badge_dx, badge_dy)
+            if mod_id == "unified-by-goshkow":
+                emoji_btn.setEnabled(False)
+            else:
+                emoji_btn.clicked.connect(lambda _=False, mid=mod_id, btn=emoji_btn: self._open_mod_emoji_menu(mid, btn))
+            icon_row.addWidget(emoji_btn, 1, Qt.AlignmentFlag.AlignCenter)
+            left_col.addWidget(icon_wrap, 0, Qt.AlignmentFlag.AlignHCenter)
 
             body = QVBoxLayout()
             body.setContentsMargins(0, 0, 0, 0)
@@ -4444,6 +5501,32 @@ class MainWindow(QMainWindow):
             actions.setContentsMargins(0, 0, 0, 0)
             actions.setSpacing(8)
 
+            move_controls = QVBoxLayout()
+            move_controls.setContentsMargins(0, 6, 0, 0)
+            move_controls.setSpacing(2)
+            move_up = QToolButton()
+            move_up.setProperty("class", "action")
+            move_up.setArrowType(Qt.ArrowType.UpArrow)
+            move_up.setToolTip(self._t("Поднять выше", "Move up"))
+            move_up.clicked.connect(lambda _=False, mid=mod_id: self._move_mod(mid, -1))
+            move_down = QToolButton()
+            move_down.setProperty("class", "action")
+            move_down.setArrowType(Qt.ArrowType.DownArrow)
+            move_down.setToolTip(self._t("Опустить ниже", "Move down"))
+            move_down.clicked.connect(lambda _=False, mid=mod_id: self._move_mod(mid, 1))
+            installed_total = sum(1 for item in combined if bool(item.get("installed")))
+            if bool(mod.get("installed")) and installed_total > 1:
+                if int(mod.get("order", 9999)) > 0:
+                    move_controls.addWidget(move_up, 0, Qt.AlignmentFlag.AlignHCenter)
+                if int(mod.get("order", 9999)) < installed_total - 1:
+                    move_controls.addWidget(move_down, 0, Qt.AlignmentFlag.AlignHCenter)
+            if move_controls.count() > 0:
+                left_col.addLayout(move_controls)
+            else:
+                left_col.addSpacing(30)
+
+            card_layout.addLayout(left_col, 0)
+
             info_btn = QPushButton(self._t("Подробнее", "Details"))
             info_btn.setIcon(self._icon("files.svg"))
             info_btn.setIconSize(QSize(14, 14))
@@ -4451,11 +5534,7 @@ class MainWindow(QMainWindow):
             self._attach_button_animations(info_btn)
             actions.addWidget(info_btn)
 
-            toggle_btn = QPushButton(
-                self._t("Выключить", "Disable")
-                if enabled
-                else self._t("Включить", "Enable")
-            )
+            toggle_btn = QPushButton(self._t("Выключить", "Disable") if enabled else self._t("Включить", "Enable"))
             toggle_btn.setProperty("class", "primary")
             toggle_btn.setIcon(self._icon("power.svg"))
             toggle_btn.setIconSize(QSize(14, 14))
@@ -4495,15 +5574,22 @@ class MainWindow(QMainWindow):
         self.mods_cards_layout.addStretch(1)
 
     def refresh_files(self, payload: object | None = None) -> None:
+        mode_index = self._file_mode_stack.currentIndex() if self._file_mode_stack is not None else 0
         if isinstance(payload, dict):
-            if payload.get("collection_id") == self._current_file_collection:
+            if mode_index == 1 and payload.get("collection_id") == self._current_file_collection and payload.get("collection_values") is not None:
                 self._refresh_file_collection_view_with_values(list(payload.get("collection_values", [])))
-            else:
-                self._refresh_file_collection_view()
-            records = payload.get("records", [])
+                self._set_files_mode_loading(False)
+            elif mode_index == 1:
+                self._refresh_file_collection_view_with_values(self._current_file_values_cache)
+                self._set_files_mode_loading(False)
+            records = payload.get("records", []) if payload.get("records") is not None else []
         else:
-            self._refresh_file_collection_view()
-            records = self.context.files.list_files()
+            if mode_index == 1:
+                self._refresh_file_collection_view()
+            records = self.context.files.list_files() if mode_index == 2 else []
+        if mode_index != 2:
+            return
+        self._set_files_mode_loading(False)
         selected = self._selected_file_path()
         self.files_list.clear()
         for record in records:
@@ -4511,20 +5597,138 @@ class MainWindow(QMainWindow):
             row_item.setData(Qt.ItemDataRole.UserRole, record.path)
             row_item.setSizeHint(QSize(200, 54))
             self.files_list.addItem(row_item)
+        if not records:
+            self.file_path_label.setText(self._t("Файлы не найдены", "No files found"))
+            self.file_editor.clear()
+            self._set_file_editor_loading(False)
+            return
         if selected:
             for i in range(self.files_list.count()):
                 it = self.files_list.item(i)
                 if it.data(Qt.ItemDataRole.UserRole) == selected:
                     self.files_list.setCurrentItem(it)
                     break
+            else:
+                if self.files_list.count() > 0:
+                    self.files_list.setCurrentRow(0)
+        elif self.files_list.count() > 0:
+            self.files_list.setCurrentRow(0)
+
+    def _advance_files_loading_frame(self) -> None:
+        self._files_loading_frame = (self._files_loading_frame + 1) % 4
+        dots = "." * self._files_loading_frame
+        if self._files_tags_loading_label is not None:
+            self._files_tags_loading_label.setText(f"{self._t('Загрузка', 'Loading')}{dots}")
+        if self._files_list_loading_label is not None:
+            self._files_list_loading_label.setText(f"{self._t('Загрузка файлов', 'Loading files')}{dots}")
+        if self._files_editor_loading_label is not None:
+            self._files_editor_loading_label.setText(f"{self._t('Загрузка файла', 'Loading file')}{dots}")
+
+    def _set_files_mode_loading(self, loading: bool) -> None:
+        mode_index = self._file_mode_stack.currentIndex() if self._file_mode_stack is not None else 0
+        if self._files_tags_stack is not None:
+            self._files_tags_stack.setCurrentIndex(0 if (loading and mode_index == 1) else 1)
+        if self._files_list_stack is not None:
+            self._files_list_stack.setCurrentIndex(0 if (loading and mode_index == 2) else 1)
+        if self._files_editor_stack is not None and mode_index == 2 and loading:
+            self._files_editor_stack.setCurrentIndex(0)
+        active = (
+            (self._files_tags_stack is not None and self._files_tags_stack.currentIndex() == 0)
+            or (self._files_list_stack is not None and self._files_list_stack.currentIndex() == 0)
+            or (self._files_editor_stack is not None and self._files_editor_stack.currentIndex() == 0)
+        )
+        if active and not self._files_loading_timer.isActive():
+            self._files_loading_timer.start()
+            self._advance_files_loading_frame()
+        elif not active and self._files_loading_timer.isActive():
+            self._files_loading_timer.stop()
+
+    def _set_file_editor_loading(self, loading: bool) -> None:
+        if self._files_editor_stack is not None:
+            self._files_editor_stack.setCurrentIndex(0 if loading else 1)
+        active = (
+            (self._files_tags_stack is not None and self._files_tags_stack.currentIndex() == 0)
+            or (self._files_list_stack is not None and self._files_list_stack.currentIndex() == 0)
+            or (self._files_editor_stack is not None and self._files_editor_stack.currentIndex() == 0)
+        )
+        if active and not self._files_loading_timer.isActive():
+            self._files_loading_timer.start()
+            self._advance_files_loading_frame()
+        elif not active and self._files_loading_timer.isActive():
+            self._files_loading_timer.stop()
+
+    def _request_file_content(self, full_path: str) -> None:
+        self._file_content_refresh_token += 1
+        self._pending_file_content_path = full_path
+        self._set_file_editor_loading(True)
+        thread = threading.Thread(
+            target=self._collect_file_content_worker,
+            args=(self._file_content_refresh_token, full_path),
+            daemon=True,
+        )
+        thread.start()
+
+    def _rebuild_logs_source_combo(self) -> None:
+        if self._logs_source_combo is None:
+            return
+        options = [
+            ("app", self._t("Приложение", "App")),
+            ("zapret", "Zapret"),
+            ("tg-ws-proxy", "TG WS Proxy"),
+            ("all", self._t("Все логи", "All logs")),
+        ]
+        current = self._current_log_source
+        self._logs_source_combo.blockSignals(True)
+        self._logs_source_combo.clear()
+        for source_id, title in options:
+            self._logs_source_combo.addItem(title, source_id)
+        index = max(0, self._logs_source_combo.findData(current))
+        self._logs_source_combo.setCurrentIndex(index)
+        self._logs_source_combo.blockSignals(False)
+
+    def _on_logs_source_changed(self, *_args: object) -> None:
+        if self._logs_source_combo is None:
+            return
+        self._current_log_source = str(self._logs_source_combo.currentData() or "app")
+        self.refresh_logs()
+
+    def _set_logs_live_enabled(self, enabled: bool) -> None:
+        if enabled:
+            if not self._logs_live_timer.isActive():
+                self._logs_live_timer.start()
+        elif self._logs_live_timer.isActive():
+            self._logs_live_timer.stop()
+
+    def _refresh_logs_live(self) -> None:
+        if not hasattr(self, "pages") or self.pages.currentIndex() != 4:
+            self._set_logs_live_enabled(False)
+            return
+        self._request_page_refresh("logs")
 
     def refresh_logs(self, payload: object | None = None) -> None:
-        if isinstance(payload, list):
+        if payload is None:
+            if self._logs_stack is not None:
+                self._logs_stack.setCurrentIndex(0)
+            self._request_page_refresh("logs")
+            return
+        if isinstance(payload, dict):
+            if str(payload.get("source", "") or "") != self._current_log_source:
+                return
+            lines = list(payload.get("lines", []))
+        elif isinstance(payload, list):
             lines = payload
         else:
-            entries = self.context.logging.read_entries()
-            lines = [f"[{e.timestamp}] {e.level}: {e.message} {e.context}" for e in entries[-250:]]
-        self.logs_text.setPlainText("\n".join(lines))
+            lines = self.context.logging.read_source_lines(self._current_log_source)
+        scrollbar = self.logs_text.verticalScrollBar()
+        at_bottom = scrollbar.value() >= max(0, scrollbar.maximum() - 4)
+        old_value = scrollbar.value()
+        if self._logs_stack is not None:
+            self._logs_stack.setCurrentIndex(1)
+        self.logs_text.setPlainText("\n".join(lines) if lines else self._t("Логи пока пустые.", "No logs yet."))
+        if at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
+        else:
+            scrollbar.setValue(min(old_value, scrollbar.maximum()))
 
 
 
