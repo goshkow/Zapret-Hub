@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import ctypes
+import json
 import os
 import platform
 import time
@@ -9,11 +10,12 @@ import threading
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 from zapret_hub import __version__
 from zapret_hub.domain import ComponentDefinition, ComponentState
-from PySide6.QtCore import QCoreApplication, QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QPropertyAnimation, QParallelAnimationGroup, Property, QByteArray
-from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QIcon, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient
+from PySide6.QtCore import QCoreApplication, QEasingCurve, QEvent, QEventLoop, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QPropertyAnimation, QParallelAnimationGroup, Property, QByteArray
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QIcon, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QRegion
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
@@ -861,6 +863,34 @@ def _content_surface_color(theme: str) -> QColor:
     return QColor("#0d1320")
 
 
+def _chrome_surface_color(theme: str) -> QColor:
+    if theme == "dark":
+        return QColor("#181a1d")
+    if theme == "oled":
+        return QColor("#0f1012")
+    if theme == "light blue":
+        return QColor("#eef4ff")
+    if is_light_theme(theme):
+        return QColor("#f3f6fd")
+    return QColor("#101726")
+
+
+def _onboarding_text_color(theme: str) -> str:
+    return "#16202f" if is_light_theme(theme) else "#f6f8fc"
+
+
+def _onboarding_muted_color(theme: str) -> str:
+    return "#4b5d78" if is_light_theme(theme) else "#9db2d8"
+
+
+def _render_widget_snapshot(widget: QWidget) -> QPixmap:
+    size = widget.size()
+    pixmap = QPixmap(size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    widget.render(pixmap, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
+    return pixmap
+
+
 class PageTransitionOverlay(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -869,6 +899,11 @@ class PageTransitionOverlay(QWidget):
         self._new_pixmap = QPixmap()
         self._old_opacity = 0.0
         self._new_opacity = 0.0
+        self._content_rect = QRect()
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAutoFillBackground(False)
+        self.hide()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.hide()
 
@@ -889,6 +924,11 @@ class PageTransitionOverlay(QWidget):
         self._new_pixmap = QPixmap()
         self._old_opacity = 0.0
         self._new_opacity = 0.0
+        self._content_rect = QRect()
+        self.update()
+
+    def set_content_rect(self, rect: QRect) -> None:
+        self._content_rect = QRect(rect)
         self.update()
 
     def _get_old_opacity(self) -> float:
@@ -913,8 +953,10 @@ class PageTransitionOverlay(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        painter.fillRect(self.rect(), self._background_color)
-        target = QRectF(self.rect())
+        target_rect = self._content_rect if not self._content_rect.isNull() else self.rect()
+        if self._background_color.alpha() > 0:
+            painter.fillRect(target_rect, self._background_color)
+        target = QRectF(target_rect)
         if not self._old_pixmap.isNull() and self._old_opacity > 0.0:
             painter.save()
             painter.setOpacity(self._old_opacity)
@@ -925,6 +967,92 @@ class PageTransitionOverlay(QWidget):
             painter.setOpacity(self._new_opacity)
             painter.drawPixmap(target, self._new_pixmap, QRectF(self._new_pixmap.rect()))
             painter.restore()
+
+
+class OnboardingPageWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._background_color = QColor(0, 0, 0, 0)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+
+    def set_background_color(self, color: QColor) -> None:
+        self._background_color = QColor(color)
+        self.update()
+
+    def paintEvent(self, event: QEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(0.0, 0.0, -1.0, -1.0)
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        radius = 16.0
+        path = QPainterPath()
+        path.moveTo(rect.left(), rect.top())
+        path.lineTo(rect.right(), rect.top())
+        path.lineTo(rect.right(), rect.bottom() - radius)
+        path.quadTo(rect.right(), rect.bottom(), rect.right() - radius, rect.bottom())
+        path.lineTo(rect.left() + radius, rect.bottom())
+        path.quadTo(rect.left(), rect.bottom(), rect.left(), rect.bottom() - radius)
+        path.lineTo(rect.left(), rect.top())
+        path.closeSubpath()
+        painter.fillPath(path, self._background_color)
+
+
+class RoundedProgressBar(QProgressBar):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._track_color = QColor(0, 0, 0, 0)
+        self._border_color = QColor(0, 0, 0, 0)
+        self._chunk_start = QColor("#59c9ff")
+        self._chunk_end = QColor("#46f4ff")
+        self.setTextVisible(False)
+
+    def set_theme_colors(
+        self,
+        *,
+        track: QColor,
+        border: QColor,
+        chunk_start: QColor,
+        chunk_end: QColor,
+    ) -> None:
+        self._track_color = QColor(track)
+        self._border_color = QColor(border)
+        self._chunk_start = QColor(chunk_start)
+        self._chunk_end = QColor(chunk_end)
+        self.update()
+
+    def paintEvent(self, event: QEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        radius = rect.height() / 2.0
+        track_path = QPainterPath()
+        track_path.addRoundedRect(rect, radius, radius)
+        painter.fillPath(track_path, self._track_color)
+        if self._border_color.alpha() > 0:
+            painter.strokePath(track_path, QPen(self._border_color, 1))
+
+        span = max(0, self.maximum() - self.minimum())
+        if span <= 0:
+            progress = 0.0
+        else:
+            progress = max(0.0, min(1.0, (self.value() - self.minimum()) / span))
+        if progress <= 0.0:
+            return
+
+        fill_width = max(rect.height(), rect.width() * progress)
+        fill_rect = QRectF(rect.left(), rect.top(), min(rect.width(), fill_width), rect.height())
+        fill_path = QPainterPath()
+        fill_path.addRoundedRect(fill_rect, radius, radius)
+        gradient = QLinearGradient(fill_rect.left(), fill_rect.top(), fill_rect.right(), fill_rect.top())
+        gradient.setColorAt(0.0, self._chunk_start)
+        gradient.setColorAt(1.0, self._chunk_end)
+        painter.save()
+        painter.setClipPath(track_path)
+        painter.fillPath(fill_path, gradient)
+        painter.restore()
 
 
 class EmojiBadgeButton(QToolButton):
@@ -1039,12 +1167,15 @@ class AppDialog(QDialog):
         self._fade_animation: QPropertyAnimation | None = None
         self._fade_closing = False
         self._force_done = False
+        self._exec_loop: QEventLoop | None = None
+        self._exec_result = QDialog.DialogCode.Rejected
         self.setObjectName("AppDialogWindow")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowFlag(Qt.WindowType.Dialog, True)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
-        self.setModal(True)
+        self.setModal(False)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setWindowTitle(title)
         self.setMinimumWidth(420)
 
@@ -1170,6 +1301,27 @@ class AppDialog(QDialog):
             return
         self._start_close_fade(result)
 
+    def exec(self) -> int:
+        self._exec_result = QDialog.DialogCode.Rejected
+        loop = QEventLoop(self)
+        self._exec_loop = loop
+
+        def _finish(code: int) -> None:
+            self._exec_result = QDialog.DialogCode(code)
+            if loop.isRunning():
+                loop.quit()
+
+        self.finished.connect(_finish)
+        self.prepare_and_center()
+        self.show()
+        loop.exec()
+        try:
+            self.finished.disconnect(_finish)
+        except Exception:
+            pass
+        self._exec_loop = None
+        return int(self._exec_result)
+
 
 class SettingsDialog(AppDialog):
     def __init__(self, parent: QWidget, context: ApplicationContext) -> None:
@@ -1254,7 +1406,7 @@ class SettingsDialog(AppDialog):
         self.ipset_mode_combo.setCurrentIndex(ipset_idx if ipset_idx >= 0 else 0)
         game_idx = self.game_mode_combo.findData(settings.zapret_game_filter_mode)
         self.game_mode_combo.setCurrentIndex(game_idx if game_idx >= 0 else 0)
-        self.autostart_checkbox.setChecked(self.context.autostart.is_enabled() or settings.autostart_windows)
+        self.autostart_checkbox.setChecked(self.context.autostart.is_enabled())
         self.tray_checkbox.setChecked(settings.start_in_tray)
         self.auto_components_checkbox.setChecked(settings.auto_run_components)
         self.check_updates_checkbox.setChecked(settings.check_updates_on_start)
@@ -1273,7 +1425,7 @@ class SettingsDialog(AppDialog):
             "tg_proxy_port": tg_port,
             "tg_proxy_secret": self.tg_secret_input.text().strip(),
             "zapret_ipset_mode": self.ipset_mode_combo.currentData() or "loaded",
-            "zapret_game_filter_mode": self.game_mode_combo.currentData() or "auto",
+            "zapret_game_filter_mode": self.game_mode_combo.currentData() or "disabled",
             "autostart_windows": self.autostart_checkbox.isChecked(),
             "start_in_tray": self.tray_checkbox.isChecked(),
             "auto_run_components": self.auto_components_checkbox.isChecked(),
@@ -1340,15 +1492,32 @@ class MainWindow(QMainWindow):
         self._general_test_cancelled = False
         self._general_test_show_results = True
         self._general_test_auto_apply = False
+        self._general_test_embedded = False
         self._general_test_eta_timer = QTimer(self)
         self._general_test_eta_timer.setInterval(1000)
         self._general_test_eta_timer.timeout.connect(self._update_general_test_eta)
         self._general_test_task_id: str | None = None
         self._first_general_prompt: AppDialog | None = None
+        self._onboarding_active = False
+        self._onboarding_running = False
+        self._onboarding_widget: QWidget | None = None
+        self._onboarding_actions_widget: QWidget | None = None
+        self._onboarding_title_label: QLabel | None = None
+        self._onboarding_desc_label: QLabel | None = None
+        self._onboarding_primary_btn: QPushButton | None = None
+        self._onboarding_secondary_btn: QPushButton | None = None
+        self._onboarding_progress_label: QLabel | None = None
+        self._onboarding_progress_bar: QProgressBar | None = None
+        self._onboarding_result_card: QFrame | None = None
+        self._onboarding_result_label: QLabel | None = None
+        self._onboarding_found_label: QLabel | None = None
+        self._onboarding_wrap_widget: QWidget | None = None
+        self._sidebar_widget: QWidget | None = None
         self._settings_diag_dialog: AppDialog | None = None
         self._settings_diag_status_label: QLabel | None = None
         self._settings_diag_progress_bar: QProgressBar | None = None
         self._settings_diag_task_id: str | None = None
+        self._settings_diag_cancelled = False
         self._loading_action = "connect"
         self._tools_btn: QToolButton | None = None
         self._settings_btn: QToolButton | None = None
@@ -1420,10 +1589,12 @@ class MainWindow(QMainWindow):
         self._pages_shell: QWidget | None = None
         self._pages_host: QWidget | None = None
         self._content_surface: QWidget | None = None
+        self._content_surface_layout: QVBoxLayout | None = None
         self._page_transition_out: QPropertyAnimation | None = None
         self._page_transition_in: QPropertyAnimation | None = None
         self._page_transition_target = -1
         self._page_transition_running = False
+        self._page_transition_started_at = 0.0
         self._window_opacity_animation: QPropertyAnimation | None = None
         self._window_fade_pending_action: str | None = None
         self._nav_highlight_initialized = False
@@ -1463,9 +1634,11 @@ class MainWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
         self._build_ui()
         self._setup_tray()
+        self._prime_runtime_snapshot_cache()
+        if self._should_show_onboarding():
+            self._set_onboarding_visible(True)
         self._apply_theme()
         self._sync_window_icon()
-        self._prime_runtime_snapshot_cache()
         self.refresh_components()
         self.refresh_mods()
         if self.context.backend is not None:
@@ -1475,7 +1648,8 @@ class MainWindow(QMainWindow):
         self.schedule_refresh_all()
         if not self._launch_hidden:
             QTimer.singleShot(240, self._prime_cached_dialogs)
-            QTimer.singleShot(800, self._maybe_run_first_general_autotest)
+            if not self._onboarding_active:
+                QTimer.singleShot(800, self._maybe_run_first_general_autotest)
             QTimer.singleShot(1400, self._check_updates_on_start)
             QTimer.singleShot(0, lambda: _bring_widget_to_front(self))
 
@@ -1495,6 +1669,31 @@ class MainWindow(QMainWindow):
         if self._component_defs_cache:
             return dict(self._component_defs_cache)
         return {component.id: component for component in self.context.processes.list_components()}
+
+    def _should_show_onboarding(self) -> bool:
+        if self._launch_hidden:
+            return False
+        if not self._onboarding_seen():
+            return bool(self._sorted_general_options())
+        settings = self.context.settings.get()
+        if settings.general_autotest_done:
+            return False
+        return bool(self._sorted_general_options())
+
+    def _onboarding_seen_marker_path(self) -> Path:
+        return self.context.paths.data_dir / ".onboarding_seen"
+
+    def _onboarding_seen(self) -> bool:
+        try:
+            return self._onboarding_seen_marker_path().exists()
+        except Exception:
+            return False
+
+    def _mark_onboarding_seen(self) -> None:
+        try:
+            self._onboarding_seen_marker_path().write_text("1\n", encoding="utf-8")
+        except Exception:
+            pass
 
     def _component_states(self) -> dict[str, ComponentState]:
         if self._component_states_cache:
@@ -1602,7 +1801,9 @@ class MainWindow(QMainWindow):
         body.setSpacing(0)
         root_frame.addLayout(body)
 
-        body.addWidget(self._build_sidebar())
+        sidebar = self._build_sidebar()
+        self._sidebar_widget = sidebar
+        body.addWidget(sidebar)
         body.addWidget(self._build_content(), 1)
 
         root.addWidget(frame)
@@ -1644,9 +1845,40 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._reposition_loading_overlay()
         self._reposition_page_transition_overlay()
+        self._apply_content_surface_mask()
+        self._relayout_onboarding_content()
         self._sync_power_aura_geometry()
         if hasattr(self, "pages") and self.pages.currentIndex() == 1:
             QTimer.singleShot(0, lambda: self._sync_component_card_layout())
+
+    def _relayout_onboarding_content(self) -> None:
+        if self._onboarding_wrap_widget is None:
+            return
+        wrap_width = max(540, min(760, self._onboarding_wrap_widget.width() - 48))
+        if self._onboarding_desc_label is not None:
+            self._onboarding_desc_label.setFixedWidth(wrap_width)
+            fm = self._onboarding_desc_label.fontMetrics()
+            rect = fm.boundingRect(0, 0, wrap_width, 0, int(Qt.TextFlag.TextWordWrap), self._onboarding_desc_label.text())
+            self._onboarding_desc_label.setMinimumHeight(max(70, rect.height() + 12))
+        if self._onboarding_result_card is not None:
+            self._onboarding_result_card.setFixedWidth(wrap_width)
+        if self._onboarding_progress_bar is not None:
+            progress_width = max(360, min(560, wrap_width - 80))
+            self._onboarding_progress_bar.setFixedWidth(progress_width)
+
+    def _format_onboarding_general_line(self, text: str) -> str:
+        if self._onboarding_found_label is None:
+            return text
+        fm = self._onboarding_found_label.fontMetrics()
+        max_width = max(340, self._onboarding_found_label.width() - 8)
+        if max_width <= 0:
+            max_width = 620
+        return fm.elidedText(text, Qt.TextElideMode.ElideRight, max_width)
+
+    def _apply_content_surface_mask(self) -> None:
+        if self._content_surface is None:
+            return
+        self._content_surface.clearMask()
 
     def _sync_power_aura_geometry(self) -> None:
         if self.power_aura is None or not hasattr(self, "_power_aura_host") or not hasattr(self, "power_button"):
@@ -1673,9 +1905,15 @@ class MainWindow(QMainWindow):
     def _reposition_page_transition_overlay(self) -> None:
         overlay = self._page_transition_overlay
         surface = self._content_surface
+        pages_shell = self._pages_shell
         if overlay is None or surface is None:
             return
-        overlay.setGeometry(surface.rect())
+        if pages_shell is not None:
+            overlay.setGeometry(pages_shell.geometry())
+            overlay.set_content_rect(overlay.rect())
+        else:
+            overlay.setGeometry(surface.rect())
+            overlay.set_content_rect(overlay.rect())
 
     def _show_loading_overlay(self, text: str | None = None, *, title: str | None = None, context: str = "general") -> None:
         self._loading_overlay_context = context
@@ -1748,7 +1986,7 @@ class MainWindow(QMainWindow):
 
     def _build_tools_menu(self) -> QMenu:
         menu = QMenu(self)
-        run_tests = QAction(self._t("Проверить конфигурации", "Run general tests"), self)
+        run_tests = QAction(self._t("Подобрать конфигурацию", "Find best configuration"), self)
         run_tests.triggered.connect(self._run_general_tests_popup)
         menu.addAction(run_tests)
 
@@ -1815,6 +2053,7 @@ class MainWindow(QMainWindow):
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(12, 12, 12, 0)
         body_layout.setSpacing(8)
+        self._content_surface_layout = body_layout
 
         pages_shell = QWidget()
         pages_shell.setObjectName("PagesShell")
@@ -1859,9 +2098,119 @@ class MainWindow(QMainWindow):
         self._page_transition_overlay_opacity_effect = None
         self._page_transition_overlay_next_opacity_effect = None
         self._reposition_page_transition_overlay()
+        onboarding = self._build_onboarding_page()
+        self._onboarding_widget = onboarding
+        onboarding.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        onboarding.hide()
+        body_layout.addWidget(onboarding, 1)
         body_layout.addWidget(pages_shell)
         layout.addWidget(body, 1)
         return pane
+
+    def _build_onboarding_page(self) -> QWidget:
+        page = OnboardingPageWidget()
+        page.setObjectName("OnboardingPage")
+        page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        root = QVBoxLayout(page)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(0)
+
+        wrap = QWidget()
+        wrap.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self._onboarding_wrap_widget = wrap
+        wrap_layout = QVBoxLayout(wrap)
+        wrap_layout.setContentsMargins(0, 0, 0, 0)
+        wrap_layout.setSpacing(16)
+        wrap_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        title = QLabel(self._t("Добро пожаловать", "Welcome"))
+        title.setProperty("class", "title")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._onboarding_title_label = title
+        wrap_layout.addWidget(title, 0, Qt.AlignmentFlag.AlignCenter)
+
+        desc = QLabel(
+            self._t(
+                "Добро пожаловать в Zapret Hub. Это приложение позволяет использовать Zapret и TG WS Proxy из единого интерфейса.\n\nХотите пройти первичную настройку и автоматически подобрать рабочую конфигурацию?",
+                "Welcome to Zapret Hub. This app lets you use Zapret and TG WS Proxy from one interface.\n\nWould you like to run initial setup and automatically find a working configuration?",
+            )
+        )
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc.setWordWrap(True)
+        desc.setMinimumWidth(520)
+        desc.setMaximumWidth(760)
+        desc.setMinimumHeight(0)
+        desc.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self._onboarding_desc_label = desc
+        wrap_layout.addWidget(desc, 0, Qt.AlignmentFlag.AlignCenter)
+
+        result_card = QWidget()
+        result_card.setMinimumWidth(520)
+        result_card.setMaximumWidth(760)
+        result_layout = QVBoxLayout(result_card)
+        result_layout.setContentsMargins(0, 0, 0, 0)
+        result_layout.setSpacing(8)
+        result_body = QLabel(self._t("Найдена подходящая конфигурация.", "A suitable configuration has been found."))
+        result_body.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        result_body.setWordWrap(False)
+        result_body.setMinimumHeight(28)
+        result_general = QLabel("")
+        result_general.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        result_general.setWordWrap(False)
+        result_general.setMinimumHeight(28)
+        result_layout.addWidget(result_body)
+        result_layout.addWidget(result_general)
+        result_card.hide()
+        self._onboarding_result_card = result_card
+        self._onboarding_result_label = result_body
+        self._onboarding_found_label = result_general
+        wrap_layout.addWidget(result_card, 0, Qt.AlignmentFlag.AlignCenter)
+
+        progress_label = QLabel("")
+        progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        progress_label.setProperty("class", "muted")
+        progress_label.hide()
+        self._onboarding_progress_label = progress_label
+        wrap_layout.addWidget(progress_label, 0, Qt.AlignmentFlag.AlignCenter)
+
+        progress = RoundedProgressBar()
+        progress.setRange(0, 100)
+        progress.setValue(0)
+        progress.setMinimumWidth(360)
+        progress.setMaximumWidth(520)
+        progress.setMinimumHeight(12)
+        progress.setMaximumHeight(12)
+        progress.setTextVisible(False)
+        progress.hide()
+        self._onboarding_progress_bar = progress
+        wrap_layout.addWidget(progress, 0, Qt.AlignmentFlag.AlignCenter)
+
+        actions = QWidget()
+        actions_layout = QVBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(12)
+
+        primary = QPushButton(self._t("Пройти первичную настройку", "Run initial setup"))
+        primary.setMinimumWidth(320)
+        primary.setMinimumHeight(44)
+        primary.clicked.connect(self._start_onboarding_flow)
+        self._onboarding_primary_btn = primary
+        actions_layout.addWidget(primary, 0, Qt.AlignmentFlag.AlignCenter)
+
+        secondary = QPushButton(self._t("Пропустить", "Skip"))
+        secondary.setFlat(True)
+        secondary.setCursor(Qt.CursorShape.PointingHandCursor)
+        secondary.setStyleSheet("background: transparent; border: none; padding: 6px 10px; color: rgba(255,255,255,0.62);")
+        secondary.clicked.connect(self._skip_onboarding)
+        self._onboarding_secondary_btn = secondary
+        actions_layout.addWidget(secondary, 0, Qt.AlignmentFlag.AlignCenter)
+        self._onboarding_actions_widget = actions
+        wrap_layout.addWidget(actions, 0, Qt.AlignmentFlag.AlignCenter)
+
+        root.addStretch(1)
+        root.addWidget(wrap, 0, Qt.AlignmentFlag.AlignCenter)
+        root.addStretch(1)
+        return page
 
     def _card(self) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
@@ -2692,7 +3041,17 @@ class MainWindow(QMainWindow):
             btn.setChecked(i == index)
         self._sync_nav_highlight(animated=True)
         if index != self.pages.currentIndex():
-            self._animate_page_switch(index)
+            try:
+                self._animate_page_switch(index)
+            except Exception:
+                self._page_transition_running = False
+                self._page_transition_started_at = 0.0
+                self.pages.setCurrentIndex(index)
+                if self._pages_shell is not None:
+                    self._pages_shell.show()
+                if self._page_transition_overlay is not None:
+                    self._page_transition_overlay.hide()
+                    self._page_transition_overlay.clear_transition()
         self._set_logs_live_enabled(index == 4)
         section_map = {
             0: "dashboard",
@@ -2715,7 +3074,33 @@ class MainWindow(QMainWindow):
         if current is None:
             sidebar.clear_highlight()
             return
-        sidebar.move_highlight(current.geometry(), animated=animated)
+        rect = current.geometry()
+        if rect.isNull() or not sidebar.contentsRect().adjusted(-6, -6, 6, 6).contains(rect):
+            QTimer.singleShot(0, lambda: self._sync_nav_highlight(animated=False))
+            return
+        sidebar.move_highlight(rect, animated=animated)
+
+    def _cancel_page_transition(self) -> None:
+        if self._page_transition_out is not None:
+            try:
+                self._page_transition_out.stop()
+            except Exception:
+                pass
+        if self._page_transition_in is not None:
+            try:
+                self._page_transition_in.stop()
+            except Exception:
+                pass
+        self._page_transition_out = None
+        self._page_transition_in = None
+        self._page_transition_running = False
+        self._page_transition_started_at = 0.0
+        if self._page_transition_overlay is not None:
+            self._page_transition_overlay.hide()
+            self._page_transition_overlay.set_background_color(QColor(0, 0, 0, 0))
+            self._page_transition_overlay.clear_transition()
+        if self._pages_shell is not None:
+            self._pages_shell.show()
 
     def _animate_page_switch(self, index: int) -> None:
         overlay = self._page_transition_overlay
@@ -2725,18 +3110,16 @@ class MainWindow(QMainWindow):
             self.pages.setCurrentIndex(index)
             return
         if self._page_transition_running:
-            self._page_transition_target = index
-            return
+            self._cancel_page_transition()
         if self.pages.currentIndex() == index:
             return
         self._page_transition_target = index
         self._page_transition_running = True
+        self._page_transition_started_at = time.monotonic()
 
         self._reposition_page_transition_overlay()
-        old_pixmap = surface.grab()
-        surface_color = _content_surface_color(self.context.settings.get().theme)
-
-        overlay.set_background_color(surface_color)
+        old_pixmap = pages_shell.grab()
+        overlay.set_background_color(_content_surface_color(self.context.settings.get().theme))
         overlay.set_old_pixmap(old_pixmap)
         overlay.set_new_pixmap(None)
         overlay.oldOpacity = 1.0
@@ -2746,7 +3129,7 @@ class MainWindow(QMainWindow):
         pages_shell.hide()
 
         fade_out = QPropertyAnimation(overlay, b"oldOpacity", self)
-        fade_out.setDuration(130)
+        fade_out.setDuration(85)
         fade_out.setStartValue(1.0)
         fade_out.setEndValue(0.0)
         fade_out.setEasingCurve(QEasingCurve.Type.InCubic)
@@ -2757,17 +3140,20 @@ class MainWindow(QMainWindow):
             overlay.set_background_color(QColor(0, 0, 0, 0))
             overlay.clear_transition()
             self._page_transition_running = False
-            if self._page_transition_target != self.pages.currentIndex():
-                self._animate_page_switch(self._page_transition_target)
+            self._page_transition_started_at = 0.0
+            self._page_transition_target = self.pages.currentIndex()
+            self._page_transition_out = None
+            self._page_transition_in = None
 
         def _start_fade_in() -> None:
             self.pages.setCurrentIndex(index)
+            current_index = self.pages.currentIndex()
             current_widget = self.pages.currentWidget()
             if current_widget is not None and current_widget.layout() is not None:
                 current_widget.layout().activate()
-            if index == 0:
+            if current_index == 0:
                 self._sync_power_aura_geometry()
-            elif index == 1:
+            elif current_index == 1:
                 self._sync_component_card_layout()
                 QTimer.singleShot(0, self._sync_component_card_layout)
                 QTimer.singleShot(80, self._sync_component_card_layout)
@@ -2780,22 +3166,24 @@ class MainWindow(QMainWindow):
             pages_shell.repaint()
             surface.repaint()
             QCoreApplication.processEvents()
-            new_pixmap = surface.grab()
+            new_pixmap = pages_shell.grab()
             pages_shell.hide()
             overlay.set_old_pixmap(None)
             overlay.set_new_pixmap(new_pixmap)
             fade_in.start()
 
         fade_in = QPropertyAnimation(overlay, b"newOpacity", self)
-        fade_in.setDuration(150)
+        fade_in.setDuration(100)
         fade_in.setStartValue(0.0)
         fade_in.setEndValue(1.0)
         fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+
         fade_out.finished.connect(_start_fade_in)
         fade_in.finished.connect(_finish)
         self._page_transition_out = fade_out
         self._page_transition_in = fade_in
         fade_out.start()
+        return
 
     def _animate_window_fade(self, *, showing: bool, action: str | None = None) -> None:
         if self._window_opacity_animation is not None:
@@ -2860,6 +3248,7 @@ class MainWindow(QMainWindow):
     def _run_settings_diagnostics_popup(self) -> None:
         if self._settings_diag_task_id:
             return
+        self._settings_diag_cancelled = False
         dialog = AppDialog(self, self.context, self._t("Подобрать настройки", "Find best settings"))
         label = QLabel(
             self._t(
@@ -2881,7 +3270,13 @@ class MainWindow(QMainWindow):
         self._settings_diag_dialog = dialog
         self._settings_diag_status_label = status
         self._settings_diag_progress_bar = bar
+        dialog.rejected.connect(self._cancel_settings_diagnostics)
         self._settings_diag_task_id = self._submit_backend_task("run_settings_diagnostics", action_id="__settings_diag__")
+
+    def _cancel_settings_diagnostics(self) -> None:
+        self._settings_diag_cancelled = True
+        if self.context.backend is not None and self._settings_diag_task_id:
+            self.context.backend.cancel(self._settings_diag_task_id)
 
     def _prime_cached_dialogs(self) -> None:
         if self._launch_hidden:
@@ -3001,6 +3396,9 @@ class MainWindow(QMainWindow):
         self._settings_diag_dialog = None
         self._settings_diag_status_label = None
         self._settings_diag_progress_bar = None
+        if self._settings_diag_cancelled:
+            self._settings_diag_cancelled = False
+            return
         if not isinstance(payload, dict):
             self._show_error(self._t("Подобрать настройки", "Find best settings"), self._t("Не удалось получить результаты.", "Failed to get results."))
             return
@@ -3009,18 +3407,40 @@ class MainWindow(QMainWindow):
             self._show_info(
                 self._t("Подобрать настройки", "Find best settings"),
                 self._t(
-                    "Не удалось подобрать устойчивые настройки. Сначала запустите проверку конфигураций и выберите рабочую конфигурацию, затем повторите попытку.",
-                    "Could not find stable settings. Run configuration check first, choose a working configuration, and try again.",
+                    "Не удалось подобрать устойчивые настройки. Сначала запустите подбор конфигурации и выберите рабочую конфигурацию, затем повторите попытку.",
+                    "Could not find stable settings. Run configuration selection first, choose a working configuration, and try again.",
                 ),
             )
             return
-        self._show_info(
-            self._t("Подобрать настройки", "Find best settings"),
+        dialog = AppDialog(self, self.context, self._t("Подобрать настройки", "Find best settings"))
+        summary = QLabel(
             self._t(
-                f"Лучшая комбинация:\nIPSet mode: {best.get('ipset_mode')}\nGaming mode: {best.get('game_mode')}\nУспешно: {best.get('passed_targets')}/{best.get('total_targets')}\nВремя: {best.get('elapsed')} сек.",
-                f"Best combination:\nIPSet mode: {best.get('ipset_mode')}\nGaming mode: {best.get('game_mode')}\nPassed: {best.get('passed_targets')}/{best.get('total_targets')}\nTime: {best.get('elapsed')}s.",
-            ),
+                f"Лучшая комбинация найдена.\n\nIPSet mode: {best.get('ipset_mode')}\nGaming mode: {best.get('game_mode')}\nУспешно: {best.get('passed_targets')}/{best.get('total_targets')}\nВремя: {best.get('elapsed')} сек.\n\nПрименить эти настройки?",
+                f"Best combination found.\n\nIPSet mode: {best.get('ipset_mode')}\nGaming mode: {best.get('game_mode')}\nPassed: {best.get('passed_targets')}/{best.get('total_targets')}\nTime: {best.get('elapsed')}s.\n\nApply these settings?",
+            )
         )
+        summary.setWordWrap(True)
+        dialog.body_layout.addWidget(summary)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close_btn = QPushButton(self._t("Закрыть", "Close"))
+        apply_btn = QPushButton(self._t("Применить лучшие настройки", "Apply best settings"))
+        apply_btn.setProperty("class", "primary")
+        close_btn.clicked.connect(dialog.reject)
+        apply_btn.clicked.connect(dialog.accept)
+        buttons.addWidget(close_btn)
+        buttons.addWidget(apply_btn)
+        dialog.body_layout.addLayout(buttons)
+        dialog.prepare_and_center()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._submit_backend_task(
+                "apply_settings",
+                {
+                    "zapret_ipset_mode": str(best.get("ipset_mode", "loaded")),
+                    "zapret_game_filter_mode": str(best.get("game_mode", "disabled")),
+                },
+                action_id="__settings__",
+            )
 
     def _on_backend_task_progress(self, message: dict) -> None:
         action = str(message.get("action", ""))
@@ -3072,6 +3492,80 @@ class MainWindow(QMainWindow):
             overlay._sync_state()
         self._sync_nav_highlight(animated=False)
         self._apply_titlebar_icons(theme)
+        self._apply_onboarding_style()
+
+    def _apply_onboarding_style(self) -> None:
+        if self._content_surface is None:
+            return
+        theme = self.context.settings.get().theme
+        if not self._onboarding_active:
+            self._content_surface.setStyleSheet("")
+        else:
+            color = _chrome_surface_color(theme).name()
+            self._content_surface.setStyleSheet(
+                "QFrame#ContentSurface {"
+                f"background: {color};"
+                "border: none;"
+                "border-top-left-radius: 18px;"
+                "border-top-right-radius: 0px;"
+                "border-bottom-left-radius: 16px;"
+                "border-bottom-right-radius: 16px;"
+                "}"
+            )
+        text_color = _onboarding_text_color(theme)
+        muted_color = _onboarding_muted_color(theme)
+        accent = "#6e8fff" if not is_light_theme(theme) else "#4f73d9"
+        accent_hover = "#7d9bff" if not is_light_theme(theme) else "#5f83ea"
+        chrome = _chrome_surface_color(theme).name()
+        if isinstance(self._onboarding_widget, OnboardingPageWidget):
+            self._onboarding_widget.set_background_color(QColor(chrome))
+            self._onboarding_widget.setStyleSheet("QWidget#OnboardingPage { border: none; }")
+        elif self._onboarding_widget is not None:
+            self._onboarding_widget.setStyleSheet(f"QWidget#OnboardingPage {{ background: {chrome}; border: none; }}")
+        if self._onboarding_wrap_widget is not None:
+            self._onboarding_wrap_widget.setStyleSheet("background: transparent;")
+        if self._onboarding_title_label is not None:
+            self._onboarding_title_label.setStyleSheet(f"color: {text_color}; background: transparent;")
+        if self._onboarding_desc_label is not None:
+            self._onboarding_desc_label.setStyleSheet(f"color: {muted_color}; background: transparent;")
+        if self._onboarding_result_card is not None:
+            self._onboarding_result_card.setStyleSheet(
+                "background: transparent; border: none;"
+            )
+        if self._onboarding_result_label is not None:
+            self._onboarding_result_label.setStyleSheet(f"color: {muted_color}; background: transparent; border: none;")
+        if self._onboarding_found_label is not None:
+            self._onboarding_found_label.setStyleSheet(f"color: {text_color}; background: transparent; border: none;")
+        if self._onboarding_progress_label is not None:
+            self._onboarding_progress_label.setStyleSheet(f"color: {muted_color}; background: transparent; border: none;")
+        if isinstance(self._onboarding_progress_bar, RoundedProgressBar):
+            track = QColor(37, 47, 62, 102) if is_light_theme(theme) else QColor(166, 187, 222, 60)
+            border = QColor("#32435b") if is_light_theme(theme) else QColor("#2f4467")
+            chunk_start = QColor("#4f73d9") if is_light_theme(theme) else QColor("#59c9ff")
+            chunk_end = QColor("#7ea5ff") if is_light_theme(theme) else QColor("#46f4ff")
+            self._onboarding_progress_bar.set_theme_colors(
+                track=track,
+                border=border,
+                chunk_start=chunk_start,
+                chunk_end=chunk_end,
+            )
+            self._onboarding_progress_bar.setStyleSheet("background: transparent; border: none;")
+        elif self._onboarding_progress_bar is not None:
+            self._onboarding_progress_bar.setStyleSheet("background: transparent; border: none;")
+        if self._onboarding_primary_btn is not None:
+            self._onboarding_primary_btn.setStyleSheet(
+                "QPushButton {"
+                f"background: transparent; border: 1px solid {accent}; border-radius: 12px; padding: 10px 18px; color: {text_color};"
+                "}"
+                "QPushButton:hover {"
+                f"background: rgba(0, 0, 0, 0); border: 1px solid {accent_hover};"
+                "}"
+            )
+        if self._onboarding_secondary_btn is not None:
+            secondary_color = "rgba(25, 32, 43, 0.58)" if is_light_theme(theme) else "rgba(255,255,255,0.62)"
+            self._onboarding_secondary_btn.setStyleSheet(
+                f"background: transparent; border: none; padding: 6px 10px; color: {secondary_color};"
+            )
 
     def _register_scroll_fade(self, scrollable: QAbstractScrollArea) -> ScrollFadeOverlay:
         overlay = ScrollFadeOverlay(scrollable)
@@ -3729,6 +4223,7 @@ class MainWindow(QMainWindow):
     def _toggle_master_runtime(self) -> None:
         if self._toggle_in_progress:
             return
+        self._sync_power_aura_geometry()
         states = self._component_states()
         active_ids = self._master_active_components()
         running_ids = {cid for cid in active_ids if states.get(cid) and states[cid].status == "running"}
@@ -3996,23 +4491,73 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _run_update_check_worker(self, manual: bool) -> None:
-        restart_zapret = False
+        settings = self.context.settings.get()
+        original_selected = str(settings.selected_zapret_general or "")
+        original_ipset = str(settings.zapret_ipset_mode or "loaded")
+        original_game = str(settings.zapret_game_filter_mode or "disabled")
+        original_running = False
         try:
             states = self._component_states()
-            restart_zapret = bool(states.get("zapret") and states["zapret"].status == "running")
+            original_running = bool(states.get("zapret") and states["zapret"].status == "running")
         except Exception:
-            restart_zapret = False
+            original_running = False
+
+        release: dict[str, str] | None = None
+        attempted: set[tuple[bool, str]] = set()
+
+        def _configure_runtime(use_zapret: bool, ipset_mode: str) -> None:
+            if not use_zapret:
+                self.context.processes.stop_component("zapret")
+                return
+            self.context.settings.update(
+                selected_zapret_general=original_selected,
+                zapret_ipset_mode=ipset_mode,
+                zapret_game_filter_mode=original_game,
+            )
+            self.context.processes.stop_component("zapret")
+            self.context.processes.start_component("zapret")
+
+        attempt_plan: list[tuple[bool, str]] = []
+        current_mode = original_ipset if original_running else "none"
+        attempt_plan.append((original_running, current_mode))
+        for mode in ("loaded", "none", "any"):
+            pair = (True, mode)
+            if pair not in attempt_plan:
+                attempt_plan.append(pair)
+        if (False, "none") not in attempt_plan:
+            attempt_plan.append((False, "none"))
 
         try:
-            if restart_zapret:
-                self.context.processes.stop_component("zapret")
-            release = self.context.updates.fetch_latest_application_release()
-        finally:
-            if restart_zapret:
+            for use_zapret, mode in attempt_plan:
+                key = (use_zapret, mode)
+                if key in attempted:
+                    continue
+                attempted.add(key)
+                if use_zapret and not original_selected:
+                    continue
                 try:
+                    _configure_runtime(use_zapret, mode)
+                except Exception:
+                    continue
+                release = self.context.updates.fetch_latest_application_release()
+                if str(release.get("status", "error")) != "error":
+                    break
+            if release is None:
+                release = self.context.updates.fetch_latest_application_release()
+        finally:
+            self.context.settings.update(
+                selected_zapret_general=original_selected,
+                zapret_ipset_mode=original_ipset,
+                zapret_game_filter_mode=original_game,
+            )
+            if original_running and original_selected:
+                try:
+                    self.context.processes.stop_component("zapret")
                     self.context.processes.start_component("zapret")
                 except Exception:
                     pass
+            else:
+                self.context.processes.stop_component("zapret")
         self._ui_signals.update_check_done.emit(release, manual)
 
     def _on_update_check_done(self, release: object, manual: bool) -> None:
@@ -4024,6 +4569,13 @@ class MainWindow(QMainWindow):
 
         status = str(release.get("status", "error"))
         latest_version = str(release.get("latest_version", ""))
+        if status == "up-to-date":
+            if self.context.settings.get().apply_update_on_next_launch:
+                self.context.settings.update(apply_update_on_next_launch=False)
+        if status == "available" and not manual and self.context.settings.get().apply_update_on_next_launch:
+            self._last_prompted_update_version = latest_version
+            self._start_update_apply(None, release)
+            return
         if status == "available":
             if manual or self._last_prompted_update_version != latest_version:
                 self._last_prompted_update_version = latest_version
@@ -4057,10 +4609,17 @@ class MainWindow(QMainWindow):
 
         body = str(release.get("body", "")).strip()
         if body:
-            notes = QLabel(body[:800])
-            notes.setWordWrap(True)
+            notes = QTextEdit()
+            notes.setReadOnly(True)
+            notes.setMinimumHeight(120)
+            notes.setMaximumHeight(220)
+            notes.setPlainText(body)
             notes.setProperty("class", "muted")
             dialog.body_layout.addWidget(notes)
+
+        next_launch_checkbox = QCheckBox(self._t("Обновить при следующем запуске", "Update on next launch"))
+        next_launch_checkbox.setChecked(bool(self.context.settings.get().apply_update_on_next_launch))
+        dialog.body_layout.addWidget(next_launch_checkbox)
 
         row = QHBoxLayout()
         row.addStretch(1)
@@ -4068,9 +4627,15 @@ class MainWindow(QMainWindow):
         link_btn = QPushButton(self._t("Открыть ссылку", "Open link"))
         update_btn = QPushButton(self._t("Обновить сейчас", "Update now"))
         update_btn.setProperty("class", "primary")
+        def _sync_update_button() -> None:
+            update_btn.setText(self._t("Применить", "Apply") if next_launch_checkbox.isChecked() else self._t("Обновить сейчас", "Update now"))
+        _sync_update_button()
+        next_launch_checkbox.toggled.connect(lambda _checked=False: _sync_update_button())
         close_btn.clicked.connect(dialog.reject)
         link_btn.clicked.connect(lambda: self._open_update_link(str(release.get("html_url", ""))))
-        update_btn.clicked.connect(lambda: self._start_update_apply(dialog, release))
+        update_btn.clicked.connect(
+            lambda: self._start_update_apply(dialog, release, schedule_only=next_launch_checkbox.isChecked())
+        )
         row.addWidget(close_btn)
         row.addWidget(link_btn)
         row.addWidget(update_btn)
@@ -4091,8 +4656,14 @@ class MainWindow(QMainWindow):
         except Exception:
             webbrowser.open(url)
 
-    def _start_update_apply(self, parent_dialog: AppDialog, release: dict[str, str]) -> None:
-        parent_dialog.accept()
+    def _start_update_apply(self, parent_dialog: AppDialog | None, release: dict[str, str], *, schedule_only: bool = False) -> None:
+        if parent_dialog is not None:
+            parent_dialog.accept()
+        if schedule_only:
+            self.context.settings.update(apply_update_on_next_launch=True)
+            return
+        if self.context.settings.get().apply_update_on_next_launch:
+            self.context.settings.update(apply_update_on_next_launch=False)
         if self._update_prepare_dialog is not None:
             return
         dialog = AppDialog(self, self.context, self._t("Подготовка обновления", "Preparing update"))
@@ -4553,54 +5124,92 @@ class MainWindow(QMainWindow):
         options = self._sorted_general_options()
         if not options:
             return
-        if self._first_general_prompt is not None:
-            try:
-                self._first_general_prompt.raise_()
-                self._first_general_prompt.activateWindow()
-            except Exception:
-                pass
+        self._set_onboarding_visible(True)
+
+    def _set_onboarding_visible(self, visible: bool) -> None:
+        self._onboarding_active = visible
+        if self._onboarding_widget is not None:
+            self._onboarding_widget.setVisible(visible)
+        if self._pages_shell is not None:
+            self._pages_shell.setVisible(not visible)
+            if not visible:
+                self._pages_shell.show()
+        if self._page_transition_overlay is not None:
+            self._page_transition_overlay.hide()
+            self._page_transition_overlay.clear_transition()
+        self._page_transition_running = False
+        self._page_transition_started_at = 0.0
+        self._page_transition_target = self.pages.currentIndex() if hasattr(self, "pages") else -1
+        if self._content_surface_layout is not None:
+            if visible:
+                self._content_surface_layout.setContentsMargins(0, 0, 0, 0)
+                self._content_surface_layout.setSpacing(0)
+            else:
+                self._content_surface_layout.setContentsMargins(12, 12, 12, 0)
+                self._content_surface_layout.setSpacing(8)
+        if self._sidebar_widget is not None:
+            self._sidebar_widget.setVisible(not visible)
+        if self._tools_btn is not None:
+            self._tools_btn.setVisible(not visible)
+        if self._settings_btn is not None:
+            self._settings_btn.setVisible(not visible)
+        self._apply_onboarding_style()
+        self._relayout_onboarding_content()
+
+    def _restore_sidebar_after_onboarding(self) -> None:
+        self._nav_highlight_initialized = False
+        if self._sidebar_widget is not None:
+            if self._sidebar_widget.layout() is not None:
+                self._sidebar_widget.layout().activate()
+            self._sidebar_widget.updateGeometry()
+            self._sidebar_widget.update()
+        sidebar = self.findChild(SidebarPanel, "Sidebar")
+        if sidebar is not None:
+            sidebar.clear_highlight()
+        self._sync_nav_highlight(animated=False)
+
+    def _skip_onboarding(self) -> None:
+        self._mark_onboarding_seen()
+        self.context.settings.update(general_autotest_done=True)
+        self._submit_backend_task("set_general_autotest_done", {"done": True}, action_id="__autotest_declined__")
+        self._set_onboarding_visible(False)
+        self.refresh_all()
+        QTimer.singleShot(0, self._restore_sidebar_after_onboarding)
+        QTimer.singleShot(80, self._restore_sidebar_after_onboarding)
+
+    def _start_onboarding_flow(self) -> None:
+        if self._onboarding_running:
             return
-
-        dialog = AppDialog(self, self.context, self._t("Первичная настройка", "First setup"))
-        dialog.setModal(False)
-        dialog.setWindowModality(Qt.WindowModality.NonModal)
-        label = QLabel(
-            self._t(
-                "Конфигурация пока не выбрана.\n\nЗапустить автоподбор сейчас?",
-                "No configuration is selected yet.\n\nRun auto-check now to find a working one?",
+        self._onboarding_running = True
+        if self._onboarding_title_label is not None:
+            self._onboarding_title_label.setText(self._t("Подбор конфигурации", "Selecting configuration"))
+        if self._onboarding_desc_label is not None:
+            self._onboarding_desc_label.setText(
+                self._t(
+                    "Сейчас приложение проверит доступные конфигурации и автоматически выберет первую полностью рабочую.",
+                    "The app will now check available configurations and automatically choose the first fully working one.",
+                )
             )
-        )
-        label.setWordWrap(True)
-        dialog.body_layout.addWidget(label)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        no_btn = QPushButton(self._t("Нет", "No"))
-        yes_btn = QPushButton(self._t("Да", "Yes"))
-        yes_btn.setProperty("class", "primary")
-        row.addWidget(no_btn)
-        row.addWidget(yes_btn)
-        dialog.body_layout.addLayout(row)
+        if self._onboarding_result_card is not None:
+            self._onboarding_result_card.hide()
+        if self._onboarding_progress_label is not None:
+            self._onboarding_progress_label.setText(self._t("Подготовка...", "Preparing..."))
+            self._onboarding_progress_label.show()
+        if self._onboarding_progress_bar is not None:
+            self._onboarding_progress_bar.setMaximum(100)
+            self._onboarding_progress_bar.setValue(0)
+            self._onboarding_progress_bar.show()
+        if self._onboarding_actions_widget is not None:
+            self._onboarding_actions_widget.hide()
+        self._relayout_onboarding_content()
+        self._run_general_tests_popup(auto_apply=True, embedded=True)
 
-        def _cleanup_prompt() -> None:
-            if self._first_general_prompt is dialog:
-                self._first_general_prompt = None
-            dialog.deleteLater()
-
-        def _decline() -> None:
-            settings.general_autotest_done = True
-            self._submit_backend_task("set_general_autotest_done", {"done": True}, action_id="__autotest_declined__")
-            dialog.close()
-
-        def _accept() -> None:
-            dialog.close()
-            QTimer.singleShot(0, lambda: self._run_general_tests_popup(auto_apply=True))
-
-        no_btn.clicked.connect(_decline)
-        yes_btn.clicked.connect(_accept)
-        dialog.finished.connect(lambda _result: _cleanup_prompt())
-        dialog.prepare_and_center()
-        self._first_general_prompt = dialog
-        dialog.show()
+    def _finish_onboarding(self) -> None:
+        self._mark_onboarding_seen()
+        self._set_onboarding_visible(False)
+        self.refresh_all()
+        QTimer.singleShot(0, self._restore_sidebar_after_onboarding)
+        QTimer.singleShot(80, self._restore_sidebar_after_onboarding)
 
     def _restart_zapret_worker(self) -> None:
         self.context.settings.save()
@@ -4650,18 +5259,27 @@ class MainWindow(QMainWindow):
         self._stop_component_loading(action_id)
         self._mark_dirty("dashboard", "components", "tray")
 
-    def _run_general_tests_popup(self, auto_apply: bool = False) -> None:
+    def _run_general_tests_popup(self, auto_apply: bool = False, embedded: bool = False) -> None:
         if self._general_test_running:
             return
         options = self._sorted_general_options()
         if not options:
-            self._show_info(self._t("Проверка конфигураций", "Run general tests"), self._t("Список конфигураций пока пуст.", "The configuration list is empty."))
+            if embedded:
+                self._onboarding_running = False
+                if self._onboarding_progress_label is not None:
+                    self._onboarding_progress_label.hide()
+                if self._onboarding_progress_bar is not None:
+                    self._onboarding_progress_bar.hide()
+                if self._onboarding_actions_widget is not None:
+                    self._onboarding_actions_widget.show()
+            self._show_info(self._t("Подобрать конфигурацию", "Find best configuration"), self._t("Список конфигураций пока пуст.", "The configuration list is empty."))
             return
 
         self._general_test_running = True
         self._general_test_cancelled = False
         self._general_test_show_results = True
         self._general_test_auto_apply = auto_apply
+        self._general_test_embedded = embedded
         self._general_test_started_at = time.time()
         self._general_test_current_index = 0
         self._general_test_total = len(options)
@@ -4670,10 +5288,18 @@ class MainWindow(QMainWindow):
         self._general_test_results = []
         self._general_test_next_option_index = 0
         targets = self.context.processes._load_standard_test_targets()
-        self._general_test_target_budget_seconds = sum(5 if str(item.get("type", "url")) == "url" else 4 for item in targets)
-        self._general_test_remaining_budget_seconds = max(1, int(self._general_test_total * self._general_test_target_budget_seconds * 0.75))
+        self._general_test_target_budget_seconds = sum(3 if str(item.get("type", "url")) == "url" else 2 for item in targets)
+        self._general_test_remaining_budget_seconds = max(1, self._general_test_total * self._general_test_target_budget_seconds)
         self._general_test_found_working_id = ""
-        dialog = AppDialog(self, self.context, self._t("Проверка конфигураций", "Run general tests"))
+        if embedded:
+            self._general_test_dialog = None
+            self._general_test_status_label = self._onboarding_progress_label
+            self._general_test_eta_label = None
+            self._general_test_progress_bar = self._onboarding_progress_bar
+            self._start_next_general_test()
+            return
+
+        dialog = AppDialog(self, self.context, self._t("Подобрать конфигурацию", "Find best configuration"))
         title = QLabel(
             self._t(
                 "Сейчас приложение по очереди проверит все доступные конфигурации и посмотрит, какие из них действительно дают подключение ко всем тестовым серверам. Этот процесс может занять много времени.",
@@ -4751,10 +5377,11 @@ class MainWindow(QMainWindow):
             return
         if self._general_test_running and self._general_test_remaining_budget_seconds > 0:
             self._general_test_remaining_budget_seconds = max(0, self._general_test_remaining_budget_seconds - 1)
+        shown_seconds = max(1, int(round(self._general_test_remaining_budget_seconds * 0.75))) if self._general_test_running else 0
         self._general_test_eta_label.setText(
             self._t(
-                f"Осталось примерно: {self._general_test_remaining_budget_seconds} сек.",
-                f"About {self._general_test_remaining_budget_seconds}s remaining.",
+                f"Осталось примерно: {shown_seconds} сек.",
+                f"About {shown_seconds}s remaining.",
             )
         )
 
@@ -4770,43 +5397,46 @@ class MainWindow(QMainWindow):
             total_targets = int(results.get("total_targets", 0) or 0)
             self._general_test_remaining_budget_seconds = max(
                 0,
-                self._general_test_remaining_budget_seconds - max(1, int(self._general_test_target_budget_seconds * 0.75)),
+                self._general_test_remaining_budget_seconds - max(1, self._general_test_target_budget_seconds),
             )
             if str(results.get("status", "")) == "ok" and not self._general_test_found_working_id:
                 self._general_test_found_working_id = str(results.get("id", ""))
-                dialog = AppDialog(self, self.context, self._t("Конфигурация найдена", "Working configuration found"))
-                label = QLabel(
-                    self._t(
-                        "Найдена полностью рабочая конфигурация. Остановиться и использовать её или продолжить проверку остальных?",
-                        "A fully working configuration has been found. Stop and use it, or continue checking the rest?",
-                    )
-                )
-                label.setWordWrap(True)
-                dialog.body_layout.addWidget(label)
-                row = QHBoxLayout()
-                row.addStretch(1)
-                stop_btn = QPushButton(self._t("Использовать найденный", "Use found config"))
-                cont_btn = QPushButton(self._t("Проверить остальные", "Check the rest"))
-                stop_btn.setProperty("class", "primary")
-                stop_btn.clicked.connect(dialog.accept)
-                cont_btn.clicked.connect(dialog.reject)
-                row.addWidget(cont_btn)
-                row.addWidget(stop_btn)
-                dialog.body_layout.addLayout(row)
-                dialog.prepare_and_center()
-                use_found = dialog.exec() == QDialog.DialogCode.Accepted
-                if use_found:
-                    chosen_id = self._general_test_found_working_id
-                    if chosen_id:
-                        self.context.settings.update(
-                            selected_zapret_general=chosen_id,
-                            general_autotest_done=True,
-                        )
-                        self._set_general_favorite(chosen_id, True)
+                if self._general_test_embedded:
                     results = list(self._general_test_results)
                 else:
-                    self._start_next_general_test()
-                    return
+                    dialog = AppDialog(self, self.context, self._t("Конфигурация найдена", "Working configuration found"))
+                    label = QLabel(
+                        self._t(
+                            "Найдена полностью рабочая конфигурация. Остановиться и использовать её или продолжить проверку остальных?",
+                            "A fully working configuration has been found. Stop and use it, or continue checking the rest?",
+                        )
+                    )
+                    label.setWordWrap(True)
+                    dialog.body_layout.addWidget(label)
+                    row = QHBoxLayout()
+                    row.addStretch(1)
+                    stop_btn = QPushButton(self._t("Использовать найденный", "Use found config"))
+                    cont_btn = QPushButton(self._t("Проверить остальные", "Check the rest"))
+                    stop_btn.setProperty("class", "primary")
+                    stop_btn.clicked.connect(dialog.accept)
+                    cont_btn.clicked.connect(dialog.reject)
+                    row.addWidget(cont_btn)
+                    row.addWidget(stop_btn)
+                    dialog.body_layout.addLayout(row)
+                    dialog.prepare_and_center()
+                    use_found = dialog.exec() == QDialog.DialogCode.Accepted
+                    if use_found:
+                        chosen_id = self._general_test_found_working_id
+                        if chosen_id:
+                            self.context.settings.update(
+                                selected_zapret_general=chosen_id,
+                                general_autotest_done=True,
+                            )
+                            self._set_general_favorite(chosen_id, True)
+                        results = list(self._general_test_results)
+                    else:
+                        self._start_next_general_test()
+                        return
             elif self._general_test_next_option_index < len(self._general_test_options):
                 self._start_next_general_test()
                 return
@@ -4867,6 +5497,75 @@ class MainWindow(QMainWindow):
             self.refresh_all()
             auto_applied = True
         self._general_test_auto_apply = False
+
+        if self._general_test_embedded:
+            self._general_test_embedded = False
+            self._onboarding_running = False
+            if chosen_id and self._onboarding_result_card is not None:
+                chosen_label = self._format_general_option_label(
+                    next((item for item in self._sorted_general_options() if item["id"] == chosen_id), {"id": chosen_id, "bundle": "", "name": chosen_id})
+                )
+                if self._onboarding_title_label is not None:
+                    self._onboarding_title_label.setText(self._t("Настройка завершена", "Setup complete"))
+                if self._onboarding_desc_label is not None:
+                    self._onboarding_desc_label.setText(
+                        self._t(
+                            "Подходящая конфигурация уже выбрана и применена. Можно перейти в главное меню.",
+                            "A suitable configuration has been selected and applied. You can continue to the main interface.",
+                        )
+                    )
+                if self._onboarding_found_label is not None:
+                    self._onboarding_found_label.setText(self._format_onboarding_general_line(f"General: {chosen_label}"))
+                if self._onboarding_progress_label is not None:
+                    self._onboarding_progress_label.hide()
+                if self._onboarding_progress_bar is not None:
+                    self._onboarding_progress_bar.hide()
+                self._onboarding_result_card.show()
+                if self._onboarding_actions_widget is not None:
+                    self._onboarding_actions_widget.show()
+                if self._onboarding_primary_btn is not None:
+                    self._onboarding_primary_btn.setEnabled(True)
+                    self._onboarding_primary_btn.setText(self._t("Далее", "Continue"))
+                    try:
+                        self._onboarding_primary_btn.clicked.disconnect()
+                    except Exception:
+                        pass
+                    self._onboarding_primary_btn.clicked.connect(lambda: self._finish_onboarding())
+                if self._onboarding_secondary_btn is not None:
+                    self._onboarding_secondary_btn.hide()
+                self._relayout_onboarding_content()
+            else:
+                if self._onboarding_title_label is not None:
+                    self._onboarding_title_label.setText(self._t("Настройка не завершена", "Setup was not completed"))
+                if self._onboarding_desc_label is not None:
+                    self._onboarding_desc_label.setText(
+                        self._t(
+                            "Не удалось автоматически подобрать полностью рабочую конфигурацию. Вы можете продолжить без этого шага.",
+                            "Could not automatically find a fully working configuration. You can continue without this step.",
+                        )
+                    )
+                if self._onboarding_progress_label is not None:
+                    self._onboarding_progress_label.hide()
+                if self._onboarding_progress_bar is not None:
+                    self._onboarding_progress_bar.hide()
+                if self._onboarding_result_card is not None:
+                    self._onboarding_result_card.hide()
+                if self._onboarding_actions_widget is not None:
+                    self._onboarding_actions_widget.show()
+                if self._onboarding_primary_btn is not None:
+                    self._onboarding_primary_btn.setEnabled(True)
+                    self._onboarding_primary_btn.setText(self._t("Продолжить", "Continue"))
+                    try:
+                        self._onboarding_primary_btn.clicked.disconnect()
+                    except Exception:
+                        pass
+                    self._onboarding_primary_btn.clicked.connect(lambda: self._finish_onboarding())
+                if self._onboarding_secondary_btn is not None:
+                    self._onboarding_secondary_btn.hide()
+                self._relayout_onboarding_content()
+            self.context.settings.update(general_autotest_done=True)
+            self._submit_backend_task("set_general_autotest_done", {"done": True}, action_id="__autotest_declined__")
+            return
 
         if not self._general_test_show_results:
             self._mark_dirty("dashboard", "components", "tray")
@@ -5161,7 +5860,7 @@ class MainWindow(QMainWindow):
                 telegram_link = QLabel()
                 telegram_link.setProperty("class", "muted")
                 telegram_link.setText(
-                    f'<a href="{self._telegram_download_url()}">{self._t("Скачать Telegram Desktop", "Download Telegram Desktop")}</a>'
+                    f'<a href="tg-download://telegram-desktop">{self._t("Скачать Telegram Desktop", "Download Telegram Desktop")}</a>'
                 )
                 telegram_link.setTextFormat(Qt.TextFormat.RichText)
                 telegram_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
@@ -5217,13 +5916,48 @@ class MainWindow(QMainWindow):
 
     def _telegram_download_url(self) -> str:
         machine = platform.machine().lower()
-        if "arm" in machine or "aarch64" in machine:
-            return "https://github.com/telegramdesktop/tdesktop/releases/latest/download/tsetup-arm64.exe"
-        return "https://github.com/telegramdesktop/tdesktop/releases/latest/download/tsetup-x64.exe"
+        want_arm = "arm" in machine or "aarch64" in machine
+        fallback = (
+            "https://github.com/telegramdesktop/tdesktop/releases/latest/download/tsetup-arm64.exe"
+            if want_arm
+            else "https://github.com/telegramdesktop/tdesktop/releases/latest/download/tsetup-x64.exe"
+        )
+        try:
+            request = Request(
+                "https://api.github.com/repos/telegramdesktop/tdesktop/releases/latest",
+                headers={"User-Agent": f"ZapretHub/{__version__}"},
+            )
+            with urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            assets = payload.get("assets") or []
+            preferred_markers = ("arm64", "arm") if want_arm else ("x64",)
+            for asset in assets:
+                if not isinstance(asset, dict):
+                    continue
+                name = str(asset.get("name") or "").lower()
+                url = str(asset.get("browser_download_url") or "").strip()
+                if not url or not name.endswith(".exe"):
+                    continue
+                if "tsetup" not in name:
+                    continue
+                if any(marker in name for marker in preferred_markers):
+                    return url
+            for asset in assets:
+                if not isinstance(asset, dict):
+                    continue
+                name = str(asset.get("name") or "").lower()
+                url = str(asset.get("browser_download_url") or "").strip()
+                if url and name.startswith("tsetup.") and name.endswith(".exe"):
+                    return url
+        except Exception:
+            return fallback
+        return fallback
 
     def _open_external_url(self, url: str) -> None:
         if not url:
             return
+        if url.startswith("tg-download://"):
+            url = self._telegram_download_url()
         try:
             if sys.platform.startswith("win"):
                 os.startfile(url)  # type: ignore[attr-defined]

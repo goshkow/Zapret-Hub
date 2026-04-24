@@ -146,7 +146,7 @@ class StorageManager:
             "name": "Unified",
             "description": "РџРѕР·РІРѕР»СЏРµС‚ РѕР±РѕР№С‚Рё Р±Р»РѕРєРёСЂРѕРІРєРё СЃР°РјС‹С… РїРѕРїСѓР»СЏСЂРЅС‹С… СЃРµСЂРІРёСЃРѕРІ, РІРєР»СЋС‡Р°СЏ РёРіСЂРѕРІС‹Рµ СЃРµСЂРІРёСЃС‹, СЃРѕС†РёР°Р»СЊРЅС‹Рµ СЃРµС‚Рё Рё РґСЂСѓРіРёРµ РїР»Р°С‚С„РѕСЂРјС‹.",
             "author": "goshkow",
-                    "version": "1.4.0",
+                    "version": "1.4.1",
             "source_url": "bundled://unified-by-goshkow",
             "category": "gaming",
             "tags": ["gaming", "social", "cloudflare", "ubisoft", "arc-raiders"],
@@ -167,7 +167,7 @@ class StorageManager:
             ),
             None,
         )
-        desired_version = str(default_mod_meta.get("version", "1.4.0"))
+        desired_version = str(default_mod_meta.get("version", "1.4.1"))
         default_bundle = self._ensure_default_bundled_mod(
             default_mod_id,
             default_mod_meta,
@@ -265,7 +265,7 @@ class StorageManager:
         )
         return {
             "id": mod_id,
-                    "version": str(meta.get("version", "1.4.0")),
+                    "version": str(meta.get("version", "1.4.1")),
             "path": str(target_dir),
             "enabled": False,
             "name": str(meta.get("name", "")),
@@ -375,7 +375,7 @@ class StorageManager:
     def read_json(self, path: Path, default: Any | None = None) -> Any:
         if not path.exists():
             return default
-        with path.open("r", encoding="utf-8") as file:
+        with path.open("r", encoding="utf-8-sig") as file:
             return json.load(file)
 
     def write_json(self, path: Path, payload: Any) -> None:

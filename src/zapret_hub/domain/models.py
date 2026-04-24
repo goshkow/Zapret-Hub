@@ -19,6 +19,7 @@ class AppSettings:
     active_profile_id: str = "default"
     enabled_component_ids: list[str] = field(default_factory=list)
     autostart_component_ids: list[str] = field(default_factory=list)
+    component_selection_initialized: bool = False
     enabled_mod_ids: list[str] = field(default_factory=list)
     mods_index_url: str = ""
     app_update_url: str = ""
@@ -30,7 +31,8 @@ class AppSettings:
     favorite_zapret_generals: list[str] = field(default_factory=list)
     general_autotest_done: bool = False
     zapret_ipset_mode: str = "loaded"
-    zapret_game_filter_mode: str = "auto"
+    zapret_game_filter_mode: str = "disabled"
+    apply_update_on_next_launch: bool = False
 
 
 @dataclass(slots=True)

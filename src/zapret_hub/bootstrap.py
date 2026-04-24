@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
+import secrets
 import sys
 from typing import Any
 
@@ -81,6 +82,7 @@ def bootstrap_application() -> ApplicationContext:
     updates = UpdatesManager(storage, logging)
     profiles = ProfilesManager(storage)
     files = FilesManager(storage, settings)
+    _prime_first_run_state(settings, processes)
 
     return ApplicationContext(
         paths=paths,
@@ -97,6 +99,23 @@ def bootstrap_application() -> ApplicationContext:
         files=files,
         backend=None,
     )
+
+
+def _prime_first_run_state(settings: SettingsManager, processes: ProcessManager) -> None:
+    current = settings.get()
+    changes: dict[str, Any] = {}
+    if not (current.tg_proxy_secret or "").strip():
+        changes["tg_proxy_secret"] = secrets.token_hex(16)
+    if str(current.zapret_ipset_mode or "").strip() not in {"loaded", "none", "any"}:
+        changes["zapret_ipset_mode"] = "loaded"
+    if str(current.zapret_game_filter_mode or "").strip() not in {"auto", "disabled", "all", "tcp", "udp"}:
+        changes["zapret_game_filter_mode"] = "disabled"
+    if not str(current.selected_zapret_general or "").strip():
+        options = processes.list_zapret_generals()
+        if options:
+            changes["selected_zapret_general"] = str(options[0]["id"])
+    if changes:
+        settings.update(**changes)
 
 
 def _hydrate_bundled_assets(

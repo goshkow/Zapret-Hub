@@ -22,6 +22,27 @@ class SettingsManager:
         settings = AppSettings(**raw)
         changed = False
 
+        # One-time migration: preserve defaults from components.json on first load only.
+        if not bool(raw.get("component_selection_initialized", False)):
+            components_raw = self.storage.read_json(self.storage.paths.data_dir / "components.json", default=[]) or []
+            if isinstance(components_raw, list):
+                enabled_defaults: list[str] = []
+                autostart_defaults: list[str] = []
+                for item in components_raw:
+                    if not isinstance(item, dict):
+                        continue
+                    cid = str(item.get("id", "")).strip()
+                    if not cid:
+                        continue
+                    if bool(item.get("enabled", False)):
+                        enabled_defaults.append(cid)
+                    if bool(item.get("autostart", False)):
+                        autostart_defaults.append(cid)
+                settings.enabled_component_ids = enabled_defaults
+                settings.autostart_component_ids = autostart_defaults
+            settings.component_selection_initialized = True
+            changed = True
+
         if not raw.get("language"):
             settings.language = self._detect_system_language()
             changed = True
@@ -34,8 +55,12 @@ class SettingsManager:
             settings.theme = self._detect_system_theme()
             changed = True
 
-        if "zapret_game_filter_mode" not in raw or raw.get("zapret_game_filter_mode") == "disabled":
-            settings.zapret_game_filter_mode = "auto"
+        if raw.get("zapret_ipset_mode") not in {"loaded", "none", "any"}:
+            settings.zapret_ipset_mode = "loaded"
+            changed = True
+
+        if raw.get("zapret_game_filter_mode") not in {"auto", "disabled", "all", "tcp", "udp"}:
+            settings.zapret_game_filter_mode = "disabled"
             changed = True
 
         if changed:

@@ -148,6 +148,10 @@ def run(argv: list[str] | None = None) -> int:
             from zapret_hub.services.backend_worker import BackendWorkerClient
 
             settings = context.settings.get()
+            actual_autostart = bool(context.autostart.is_enabled())
+            if bool(settings.autostart_windows) != actual_autostart:
+                context.settings.update(autostart_windows=actual_autostart)
+                settings = context.settings.get()
             launch_hidden = bool(known.autostart_launch and settings.start_in_tray)
             context.backend = BackendWorkerClient(app)
             window = MainWindow(context, launch_hidden=launch_hidden)
@@ -183,7 +187,6 @@ def run(argv: list[str] | None = None) -> int:
                         pass
 
             app.aboutToQuit.connect(_cleanup_before_quit)
-            context.autostart.set_enabled(bool(settings.autostart_windows))
             if known.autostart_launch and settings.auto_run_components:
                 QTimer.singleShot(0, window.start_enabled_components_async)
             if launch_hidden:

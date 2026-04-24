@@ -1,0 +1,59 @@
+name: CI Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "codex/**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
+      - name: Build application
+        shell: pwsh
+        run: python -m PyInstaller -y .\packaging\zapret_hub.spec
+
+      - name: Prepare payload
+        shell: pwsh
+        run: python .\_refresh_release.py
+
+      - name: Build installer
+        shell: pwsh
+        run: python -m PyInstaller -y .\packaging\install_zaprethub.spec
+
+      - name: Refresh release files
+        shell: pwsh
+        run: python .\_refresh_release.py
+
+      - name: SignPath placeholder
+        shell: pwsh
+        run: .\scripts\signpath_stub.ps1 -InputPath ".\dist\zapret_hub\zapret_hub.exe"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zapret-hub-ci-windows
+          path: |
+            dist/zapret_hub/**
+            dist/install_zaprethub.exe
+            release_1.4.1/*.zip
+            release_1.4.1/*.exe
+          if-no-files-found: error

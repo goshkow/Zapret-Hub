@@ -12,13 +12,18 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 
 def _snapshot(context) -> dict[str, Any]:
+    settings = context.settings.get()
     return {
         "components": [asdict(item) for item in context.processes.list_components()],
         "states": [asdict(item) for item in context.processes.list_states()],
         "settings": {
-            "selected_zapret_general": context.settings.get().selected_zapret_general,
-            "favorite_zapret_generals": list(context.settings.get().favorite_zapret_generals or []),
-            "enabled_mod_ids": list(context.settings.get().enabled_mod_ids or []),
+            "selected_zapret_general": settings.selected_zapret_general,
+            "favorite_zapret_generals": list(settings.favorite_zapret_generals or []),
+            "enabled_mod_ids": list(settings.enabled_mod_ids or []),
+            "zapret_ipset_mode": settings.zapret_ipset_mode,
+            "zapret_game_filter_mode": settings.zapret_game_filter_mode,
+            "autostart_windows": bool(settings.autostart_windows),
+            "apply_update_on_next_launch": bool(getattr(settings, "apply_update_on_next_launch", False)),
         },
     }
 
@@ -53,6 +58,7 @@ def _worker_main(task_queue, result_queue) -> None:
 
 def _run_action(context, action: str, payload: dict[str, Any], emit_progress: callable | None = None) -> dict[str, Any]:
     payload = {key: value for key, value in payload.items() if not str(key).startswith("_")}
+    context.settings.reload()
 
     if action == "toggle_master_runtime":
         components = context.processes.list_components()

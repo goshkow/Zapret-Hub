@@ -155,10 +155,8 @@ class ProcessManager:
         settings = self.settings.get()
         components = [ComponentDefinition(**item) for item in raw_items]
         for component in components:
-            if settings.enabled_component_ids:
-                component.enabled = component.id in settings.enabled_component_ids
-            if settings.autostart_component_ids:
-                component.autostart = component.id in settings.autostart_component_ids
+            component.enabled = component.id in settings.enabled_component_ids
+            component.autostart = component.id in settings.autostart_component_ids
         return components
 
     def list_zapret_generals(self) -> list[dict[str, str]]:
@@ -1023,6 +1021,32 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         self.settings.update(selected_zapret_general=original)
         return None
 
+    def _capture_diagnostic_settings(self) -> dict[str, object]:
+        settings = self.settings.get()
+        return {
+            "selected_zapret_general": settings.selected_zapret_general,
+            "zapret_ipset_mode": settings.zapret_ipset_mode,
+            "zapret_game_filter_mode": settings.zapret_game_filter_mode,
+        }
+
+    def _restore_diagnostic_settings(self, snapshot: dict[str, object]) -> None:
+        self.settings.update(
+            selected_zapret_general=str(snapshot.get("selected_zapret_general", "") or ""),
+            zapret_ipset_mode=str(snapshot.get("zapret_ipset_mode", "loaded") or "loaded"),
+            zapret_game_filter_mode=str(snapshot.get("zapret_game_filter_mode", "disabled") or "disabled"),
+        )
+
+    def _prepare_diagnostic_runtime(self, *, general_id: str, ipset_mode: str, game_mode: str) -> bool:
+        original_running = self._is_image_running("winws.exe")
+        if original_running:
+            self.stop_component("zapret")
+        self.settings.update(
+            selected_zapret_general=general_id,
+            zapret_ipset_mode=ipset_mode,
+            zapret_game_filter_mode=game_mode,
+        )
+        return original_running
+
     def run_single_general_diagnostic(
         self,
         general_id: str,
@@ -1033,10 +1057,13 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         option = options.get(general_id)
         if option is None:
             return {"status": "error", "error": "general not found", "passed_targets": 0, "total_targets": 0}
-        original_selected = self.settings.get().selected_zapret_general
-        original_running = self._is_image_running("winws.exe")
+        settings_snapshot = self._capture_diagnostic_settings()
+        original_running = self._prepare_diagnostic_runtime(
+            general_id=general_id,
+            ipset_mode="loaded",
+            game_mode="all",
+        )
         try:
-            self.stop_all()
             outcome = self._run_general_connectivity_check(
                 general_id,
                 stop_callback=stop_callback,
@@ -1054,8 +1081,8 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             }
         finally:
             self.stop_component("zapret")
-            self.settings.update(selected_zapret_general=original_selected)
-            if original_running and original_selected:
+            self._restore_diagnostic_settings(settings_snapshot)
+            if original_running and str(settings_snapshot.get("selected_zapret_general", "")):
                 self.start_component("zapret")
 
     def run_general_diagnostics(
@@ -1067,7 +1094,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         if not options:
             return []
 
-        original_selected = self.settings.get().selected_zapret_general
+        settings_snapshot = self._capture_diagnostic_settings()
         original_running = self._is_image_running("winws.exe")
         results: list[dict[str, str]] = []
         targets = self._load_standard_test_targets()
@@ -1075,11 +1102,16 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         total_steps = len(options) * per_general_steps
 
         try:
-            self.stop_all()
+            if original_running:
+                self.stop_component("zapret")
             for index, option in enumerate(options, start=1):
                 if stop_callback is not None and stop_callback():
                     break
-                self.settings.update(selected_zapret_general=option["id"])
+                self.settings.update(
+                    selected_zapret_general=option["id"],
+                    zapret_ipset_mode="loaded",
+                    zapret_game_filter_mode="all",
+                )
                 base_step = (index - 1) * per_general_steps
                 if progress_callback is not None:
                     progress_callback(base_step + 1, total_steps, option["name"])
@@ -1114,8 +1146,8 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 )
                 self.stop_component("zapret")
         finally:
-            self.settings.update(selected_zapret_general=original_selected)
-            if original_running and original_selected:
+            self._restore_diagnostic_settings(settings_snapshot)
+            if original_running and str(settings_snapshot.get("selected_zapret_general", "")):
                 self.start_component("zapret")
 
         return results
@@ -1130,12 +1162,15 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         if not general_id:
             return {"results": [], "status": "error", "error": "No selected general"}
         ipset_modes = ["loaded", "none", "any"]
-        game_modes = ["auto", "disabled", "all", "tcp", "udp"]
+        game_modes = ["disabled", "all", "tcp", "udp", "auto"]
         combinations = [(ipset, game) for ipset in ipset_modes for game in game_modes]
         targets = self._load_standard_test_targets()
         results: list[dict[str, object]] = []
         total = max(1, len(combinations))
+        original_running = self._is_image_running("winws.exe")
         try:
+            if original_running:
+                self.stop_component("zapret")
             for index, (ipset_mode, game_mode) in enumerate(combinations, start=1):
                 if stop_callback is not None and stop_callback():
                     break
@@ -1168,6 +1203,8 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 zapret_ipset_mode=original.zapret_ipset_mode,
                 zapret_game_filter_mode=original.zapret_game_filter_mode,
             )
+            if original_running and general_id:
+                self.start_component("zapret")
 
         ranked = sorted(
             results,
@@ -1178,7 +1215,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def fetch_latest_zapret_release(self) -> dict[str, str]:
         api_url = "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest"
-        request = Request(api_url, headers={"User-Agent": "ZapretHub/1.4.0"})
+        request = Request(api_url, headers={"User-Agent": "ZapretHub/1.4.1"})
         with urlopen(request, timeout=20) as response:
             payload = json.loads(response.read().decode("utf-8"))
         latest_version = str(payload.get("tag_name") or payload.get("name") or "").strip().lstrip("v")
@@ -1210,7 +1247,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         temp_root = Path(tempfile.mkdtemp(prefix="zapret_hub_zapret_update_"))
         try:
             zip_path = temp_root / (release.get("asset_name") or "zapret.zip")
-            with urlopen(Request(asset_url, headers={"User-Agent": "ZapretHub/1.4.0"}), timeout=60) as response:
+            with urlopen(Request(asset_url, headers={"User-Agent": "ZapretHub/1.4.1"}), timeout=60) as response:
                 zip_path.write_bytes(response.read())
             extract_root = temp_root / "extract"
             extract_root.mkdir(parents=True, exist_ok=True)
@@ -1339,21 +1376,11 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         defaults = [
             ("Discord Main", "https://discord.com"),
             ("Discord Gateway", "https://gateway.discord.gg"),
-            ("Discord CDN", "https://cdn.discordapp.com"),
-            ("Discord Updates", "https://updates.discord.com"),
             ("YouTube Web", "https://www.youtube.com"),
-            ("YouTube Short", "https://youtu.be"),
-            ("YouTube Image", "https://i.ytimg.com"),
-            ("YouTube Video Redirect", "https://redirector.googlevideo.com"),
             ("Google Main", "https://www.google.com"),
-            ("Google Gstatic", "https://www.gstatic.com"),
             ("Cloudflare Web", "https://www.cloudflare.com"),
-            ("Cloudflare CDN", "https://cdnjs.cloudflare.com"),
             ("Cloudflare DNS 1.1.1.1", "PING:1.1.1.1"),
-            ("Cloudflare DNS 1.0.0.1", "PING:1.0.0.1"),
             ("Google DNS 8.8.8.8", "PING:8.8.8.8"),
-            ("Google DNS 8.8.4.4", "PING:8.8.4.4"),
-            ("Quad9 DNS 9.9.9.9", "PING:9.9.9.9"),
         ]
         return [self._convert_test_target(name, value) for name, value in defaults]
 
@@ -1391,8 +1418,10 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
                 curl_path,
                 "-I",
                 "-s",
+                "--connect-timeout",
+                "2",
                 "-m",
-                "5",
+                "3",
                 "-o",
                 "NUL",
                 "-w",
@@ -1408,7 +1437,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
     def _ping_target(self, host: str) -> bool:
         if not host:
             return False
-        proc = self._run_quiet(["ping", "-n", "2", "-w", "2000", host])
+        proc = self._run_quiet(["ping", "-n", "1", "-w", "1200", host])
         return proc.returncode == 0
 
     def _build_zapret_args(self, bin_dir: Path, lists_dir: Path) -> list[str]:

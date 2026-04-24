@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zapret-hub"
-version = "1.3.0"
+version = "1.4.1"
 description = "Windows desktop hub for managing external network utilities and configuration packs."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "PySide6>=6.7",
     "cryptography>=46.0.0",
+    "pydivert>=3.1.1",
 ]
 
 [project.optional-dependencies]

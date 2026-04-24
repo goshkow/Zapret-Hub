@@ -2,8 +2,49 @@
 
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.win32.versioninfo import (
+    VSVersionInfo,
+    FixedFileInfo,
+    StringFileInfo,
+    StringTable,
+    StringStruct,
+    VarFileInfo,
+    VarStruct,
+)
 
 project_root = Path(SPECPATH).resolve().parent
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=(1, 4, 1, 0),
+        prodvers=(1, 4, 1, 0),
+        mask=0x3F,
+        flags=0x0,
+        OS=0x40004,
+        fileType=0x1,
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo(
+            [
+                StringTable(
+                    "040904B0",
+                    [
+                        StringStruct("CompanyName", "goshkow"),
+                        StringStruct("FileDescription", "Zapret Hub"),
+                        StringStruct("FileVersion", "1.4.1"),
+                        StringStruct("InternalName", "zapret_hub"),
+                        StringStruct("OriginalFilename", "zapret_hub.exe"),
+                        StringStruct("ProductName", "Zapret Hub"),
+                        StringStruct("ProductVersion", "1.4.1"),
+                        StringStruct("Publisher", "goshkow"),
+                    ],
+                )
+            ]
+        ),
+        VarFileInfo([VarStruct("Translation", [1033, 1200])]),
+    ],
+)
 datas = [
     (str(project_root / "sample_data"), "sample_data"),
     (str(project_root / "runtime"), "runtime"),
@@ -67,10 +108,11 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     exclude_binaries=True,
     icon=str(project_root / "ui_assets" / "icons" / "app.ico"),
+    version=version_info,
 )
 
 coll = COLLECT(
@@ -78,6 +120,6 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     name="zapret_hub",
 )
