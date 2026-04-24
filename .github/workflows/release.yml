@@ -14,9 +14,6 @@ on:
         description: "Release title"
         required: true
         default: "Zapret Hub 1.4.1"
-      changelog:
-        description: "Release changelog"
-        required: true
 
 jobs:
   release-windows:
@@ -34,18 +31,17 @@ jobs:
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $tag = "${{ inputs.tag }}"
             $name = "${{ inputs.release_name }}"
-            $bodyFile = Join-Path $env:RUNNER_TEMP "release_notes.md"
-            @'
-${{ inputs.changelog }}
-'@ | Set-Content -Path $bodyFile -Encoding UTF8
           } else {
             $tag = "${{ github.ref_name }}"
-            $version = $tag.TrimStart('v')
+            $name = ""
+          }
+          $version = $tag.TrimStart('v')
+          if ([string]::IsNullOrWhiteSpace($name)) {
             $name = "Zapret Hub $version"
-            $bodyFile = ".github/release-notes/$version.md"
-            if (-not (Test-Path $bodyFile)) {
-              throw "Release notes file not found: $bodyFile"
-            }
+          }
+          $bodyFile = ".github/release-notes/$version.md"
+          if (-not (Test-Path $bodyFile)) {
+            throw "Release notes file not found: $bodyFile"
           }
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
