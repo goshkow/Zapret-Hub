@@ -25,7 +25,7 @@ jobs:
       body_file: ${{ steps.meta.outputs.body_file }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve release metadata
         id: meta
@@ -56,10 +56,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -74,7 +74,7 @@ jobs:
         run: python -m PyInstaller -y .\packaging\zapret_hub.spec
 
       - name: Upload x64 build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: zapret-hub-x64
           path: dist/zapret_hub/**
@@ -85,10 +85,10 @@ jobs:
     runs-on: windows-11-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -108,7 +108,7 @@ jobs:
         run: python -m PyInstaller -y .\packaging\zapret_hub.spec
 
       - name: Upload ARM64 build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: zapret-hub-arm64
           path: dist/zapret_hub/**
@@ -124,10 +124,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -138,13 +138,13 @@ jobs:
           python -m pip install -e .[dev]
 
       - name: Download x64 build
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: zapret-hub-x64
           path: dist/zapret_hub
 
       - name: Download ARM64 build
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: zapret-hub-arm64
           path: .release_cache/win_arm64
