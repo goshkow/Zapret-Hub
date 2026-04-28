@@ -24,7 +24,6 @@ from zapret_hub.domain import ComponentDefinition, ComponentState
 from zapret_hub.services.logging_service import LoggingManager
 from zapret_hub.services.settings import SettingsManager
 from zapret_hub.services.storage import StorageManager
-from zapret_hub import __version__
 
 _VPN_PROCESS_PATTERNS = (
     "nekobox",
@@ -1216,7 +1215,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def fetch_latest_zapret_release(self) -> dict[str, str]:
         api_url = "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest"
-        request = Request(api_url, headers={"User-Agent": f"ZapretHub/{__version__}"})
+        request = Request(api_url, headers={"User-Agent": "ZapretHub/1.4.1"})
         with urlopen(request, timeout=20) as response:
             payload = json.loads(response.read().decode("utf-8"))
         latest_version = str(payload.get("tag_name") or payload.get("name") or "").strip().lstrip("v")
@@ -1248,7 +1247,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         temp_root = Path(tempfile.mkdtemp(prefix="zapret_hub_zapret_update_"))
         try:
             zip_path = temp_root / (release.get("asset_name") or "zapret.zip")
-            with urlopen(Request(asset_url, headers={"User-Agent": f"ZapretHub/{__version__}"}), timeout=60) as response:
+            with urlopen(Request(asset_url, headers={"User-Agent": "ZapretHub/1.4.1"}), timeout=60) as response:
                 zip_path.write_bytes(response.read())
             extract_root = temp_root / "extract"
             extract_root.mkdir(parents=True, exist_ok=True)
