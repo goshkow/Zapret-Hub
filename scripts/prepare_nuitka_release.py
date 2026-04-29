@@ -67,10 +67,14 @@ def main() -> None:
     if not arm64_source.exists():
         raise FileNotFoundError(f"arm64 source not found: {arm64_source}")
 
+    if payload_dir.exists():
+        shutil.rmtree(payload_dir, ignore_errors=True)
     payload_dir.mkdir(parents=True, exist_ok=True)
     _zip_with_root(x64_source, payload_dir / "win_x64.zip")
     _zip_with_root(arm64_source, payload_dir / "win_arm64.zip")
 
+    if release_dir.exists():
+        shutil.rmtree(release_dir, ignore_errors=True)
     release_dir.mkdir(parents=True, exist_ok=True)
     portable_x64_dir = release_dir / f"zapret_hub_{version}_portable_win_x64"
     portable_arm64_dir = release_dir / f"zapret_hub_{version}_portable_win_arm64"

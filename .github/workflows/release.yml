@@ -22,6 +22,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Clean workspace
+        shell: pwsh
+        run: |
+          Remove-Item .\dist_nuitka -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\.nuitka_staging -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\installer_payload -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\release_1.4.2 -Recurse -Force -ErrorAction SilentlyContinue
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -51,6 +59,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Clean workspace
+        shell: pwsh
+        run: |
+          Remove-Item .\dist_nuitka -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\.nuitka_staging -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\installer_payload -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\release_1.4.2 -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -89,6 +105,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Clean workspace
+        shell: pwsh
+        run: |
+          Remove-Item .\dist_nuitka -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\dist_installer -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\.nuitka_staging -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\.artifacts -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\installer_payload -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\release_1.4.2 -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Set up Python
         uses: actions/setup-python@v6

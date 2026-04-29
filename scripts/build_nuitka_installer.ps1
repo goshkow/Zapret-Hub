@@ -11,8 +11,12 @@ Set-Location $root
 
 & $Python scripts\sync_app_icon.py
 if ($LASTEXITCODE -ne 0) { throw "sync_app_icon.py failed with exit code $LASTEXITCODE" }
-& $Python scripts\prepare_nuitka_release.py --payload-dir $PayloadDir --release-dir release_1.4.2
-if ($LASTEXITCODE -ne 0) { throw "prepare_nuitka_release.py failed with exit code $LASTEXITCODE" }
+
+$payloadRoot = Join-Path $root $PayloadDir
+$payloadX64 = Join-Path $payloadRoot "win_x64.zip"
+$payloadArm64 = Join-Path $payloadRoot "win_arm64.zip"
+if (-not (Test-Path $payloadX64)) { throw "installer payload missing: $payloadX64" }
+if (-not (Test-Path $payloadArm64)) { throw "installer payload missing: $payloadArm64" }
 
 & $Python -m nuitka `
   --onefile `
