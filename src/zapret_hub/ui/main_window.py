@@ -1802,6 +1802,9 @@ class MainWindow(QMainWindow):
         self._file_tag_render_index = 0
         self._file_tag_render_finish_loading = False
         self._file_tag_render_generation = 0
+        self._file_tag_render_summary = ""
+        self._file_tag_display_signature: tuple[str, int, str] | None = None
+        self._file_tag_display_limit = 900
         self._file_tag_render_timer = QTimer(self)
         self._file_tag_render_timer.setSingleShot(True)
         self._file_tag_render_timer.timeout.connect(self._render_file_tags_chunk)
@@ -5018,6 +5021,8 @@ class MainWindow(QMainWindow):
         self._file_tag_render_values = []
         self._file_tag_render_index = 0
         self._file_tag_render_finish_loading = False
+        self._file_tag_render_summary = ""
+        self._file_tag_display_signature = None
 
     def _clear_file_tag_widgets(self) -> None:
         if self._file_tag_flow is None:
@@ -5063,13 +5068,64 @@ class MainWindow(QMainWindow):
             chip_layout.addWidget(remove_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         return chip
 
+    def _create_file_tag_summary_chip(self, text: str) -> QFrame:
+        chip = QFrame()
+        chip.setProperty("class", "modMeta")
+        chip.setProperty("searchState", "idle")
+        chip.setMinimumHeight(42)
+        chip.setStyleSheet(
+            "QFrame { border-radius: 14px; border: 1px solid rgba(126, 164, 255, 0.34); background: rgba(126, 164, 255, 0.08); }"
+        )
+        layout = QHBoxLayout(chip)
+        layout.setContentsMargins(12, 6, 12, 6)
+        label = QLabel(text)
+        label.setProperty("class", "muted")
+        label.setStyleSheet("background: transparent; border: none; padding: 0px; margin: 0px;")
+        layout.addWidget(label)
+        return chip
+
+    def _visible_file_tag_values(self, values: list[str]) -> tuple[list[str], str]:
+        limit = max(100, int(self._file_tag_display_limit))
+        query = ""
+        if (
+            self._file_search_mode == "tags"
+            and self._file_search_expanded
+            and self._file_search_input is not None
+        ):
+            query = self._file_search_input.text().strip().lower()
+        if query:
+            matched = [value for value in values if query in value.lower()]
+            if len(matched) > limit:
+                return matched[:limit], self._t(
+                    f"Показано первые {limit} из {len(matched)} совпадений. Уточните поиск, чтобы сузить список.",
+                    f"Showing first {limit} of {len(matched)} matches. Refine search to narrow the list.",
+                )
+            if len(values) > limit:
+                return matched, self._t(
+                    f"Найдено {len(matched)} из {len(values)} значений.",
+                    f"Found {len(matched)} of {len(values)} values.",
+                )
+            return matched, ""
+        if len(values) > limit:
+            return values[:limit], self._t(
+                f"Показано первые {limit} из {len(values)} значений. Используйте поиск, чтобы быстро найти нужный IP.",
+                f"Showing first {limit} of {len(values)} values. Use search to quickly find the IP you need.",
+            )
+        return values, ""
+
     def _render_file_tags(self, values: list[str] | None = None, *, finish_loading: bool = False) -> None:
         if self._file_tag_flow is None:
             return
         resolved_values = list(values if values is not None else self._current_file_values_cache)
+        visible_values, summary = self._visible_file_tag_values(resolved_values)
+        search_query = ""
+        if self._file_search_mode == "tags" and self._file_search_input is not None:
+            search_query = self._file_search_input.text().strip().lower()
+        display_signature = (search_query, len(visible_values), summary)
         if (
             resolved_values == self._current_file_values_cache
-            and self._file_tag_flow.count() == len(resolved_values)
+            and self._file_tag_flow.count() == len(visible_values) + (1 if summary else 0)
+            and self._file_tag_display_signature == display_signature
             and len(resolved_values) > 0
         ):
             if self._file_search_mode == "tags" and self._file_search_expanded and self._file_search_input is not None and self._file_search_input.text().strip():
@@ -5080,10 +5136,14 @@ class MainWindow(QMainWindow):
         self._cancel_file_tag_render()
         self._clear_file_tag_widgets()
         self._current_file_values_cache = resolved_values
-        self._file_tag_render_values = list(resolved_values)
+        self._file_tag_display_signature = display_signature
+        self._file_tag_render_values = list(visible_values)
         self._file_tag_render_index = 0
         self._file_tag_render_finish_loading = finish_loading
+        self._file_tag_render_summary = summary
         if not self._file_tag_render_values:
+            if summary:
+                self._file_tag_flow.addWidget(self._create_file_tag_summary_chip(summary))
             if finish_loading:
                 self._set_files_mode_loading(False)
             self._sync_file_tag_canvas_geometry()
@@ -5099,13 +5159,16 @@ class MainWindow(QMainWindow):
         values = self._file_tag_render_values
         if not values:
             return
-        chunk_size = 40
+        chunk_size = 120
         start = self._file_tag_render_index
         end = min(start + chunk_size, len(values))
         for value in values[start:end]:
             self._file_tag_flow.addWidget(self._create_file_tag_chip(value))
         self._file_tag_render_index = end
-        self._sync_file_tag_canvas_geometry()
+        if start == 0 and self._file_tag_render_finish_loading:
+            self._set_files_mode_loading(False)
+        if start == 0 or end >= len(values) or end % 600 == 0:
+            self._sync_file_tag_canvas_geometry()
         self._file_tag_canvas.update()
         if self._file_tag_scroll is not None:
             self._file_tag_scroll.viewport().update()
@@ -5113,6 +5176,9 @@ class MainWindow(QMainWindow):
             if render_generation == self._file_tag_render_generation:
                 self._file_tag_render_timer.start(0)
             return
+        if self._file_tag_render_summary:
+            self._file_tag_flow.addWidget(self._create_file_tag_summary_chip(self._file_tag_render_summary))
+            self._file_tag_render_summary = ""
         self._file_tag_render_values = []
         self._file_tag_render_index = 0
         finish_loading = self._file_tag_render_finish_loading
@@ -6008,6 +6074,9 @@ class MainWindow(QMainWindow):
         self._update_file_search_controls()
 
     def _on_file_search_text_changed(self, _text: str) -> None:
+        if self._file_search_mode == "tags":
+            self._render_file_tags(self._current_file_values_cache)
+            return
         self._refresh_file_search_matches()
 
     def _on_file_editor_text_changed(self) -> None:
