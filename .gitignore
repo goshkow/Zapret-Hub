@@ -34,6 +34,7 @@ default_packs/
 *.zip
 *.7z
 *.log
+README.md
 
 # ide
 .idea/
