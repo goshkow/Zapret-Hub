@@ -153,7 +153,7 @@ jobs:
 
       - name: Build universal installer
         shell: pwsh
-        run: .\scripts\build_nuitka_installer.ps1 -Python python -PayloadDir installer_payload -OutputDir dist_installer
+        run: .\scripts\build_nuitka_installer.ps1 -Python python -PayloadDir installer_payload -OutputDir dist_installer -SkipPrepareRelease
 
       - name: Place installer into release folder
         shell: pwsh

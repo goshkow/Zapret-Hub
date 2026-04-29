@@ -392,13 +392,19 @@ class ProcessManager:
             active_root = self._prepare_active_zapret_runtime(
                 selected_bundle_root=selected_bundle_root,
                 selected_bundle_id=selected_option["bundle_id"],
+                selected_script_name=selected_script.name,
             )
             self._current_zapret_runtime = active_root
             self._apply_zapret_runtime_switches(active_root)
             active_script = active_root / selected_script.name
             self._ensure_zapret_user_lists(active_root / "lists")
+            self._materialize_visible_merged_runtime(active_root)
             bin_dir = active_root / "bin"
             lists_dir = active_root / "lists"
+            if not active_script.exists():
+                raise FileNotFoundError(f"Selected general was not materialized: {active_script}")
+            if not (bin_dir / "winws.exe").exists():
+                raise FileNotFoundError(f"winws.exe was not materialized: {bin_dir / 'winws.exe'}")
             winws_command = self._extract_winws_command(active_script, bin_dir=bin_dir, lists_dir=lists_dir)
             winws_command = self._apply_vpn_priority_to_command(winws_command, lists_dir=lists_dir)
             if not winws_command:
@@ -489,6 +495,7 @@ class ProcessManager:
 
             executable = self._expand_batch_value(
                 parts[winws_idx],
+                script_dir=script_path.parent,
                 bin_dir=bin_dir,
                 lists_dir=lists_dir,
                 game_filter=game_filter,
@@ -499,11 +506,18 @@ class ProcessManager:
                 continue
             exe_path = Path(executable)
             if not exe_path.is_absolute():
-                exe_path = bin_dir / exe_path.name
+                script_relative = script_path.parent / executable
+                if script_relative.exists():
+                    exe_path = script_relative
+                elif exe_path.name.lower() == "winws.exe":
+                    exe_path = bin_dir / "winws.exe"
+                else:
+                    exe_path = bin_dir / exe_path.name
             args: list[str] = []
             for raw_arg in parts[winws_idx + 1 :]:
                 arg = self._expand_batch_value(
                     raw_arg,
+                    script_dir=script_path.parent,
                     bin_dir=bin_dir,
                     lists_dir=lists_dir,
                     game_filter=game_filter,
@@ -671,6 +685,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         self,
         value: str,
         *,
+        script_dir: Path,
         bin_dir: Path,
         lists_dir: Path,
         game_filter: str,
@@ -678,7 +693,10 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         game_filter_udp: str,
     ) -> str:
         result = value
+        script_prefix = str(script_dir) + os.sep
         replacements = {
+            "%~dp0": script_prefix,
+            "%CD%": str(script_dir),
             "%BIN%": str(bin_dir) + os.sep,
             "%LISTS%": str(lists_dir) + os.sep,
             "%GameFilter%": game_filter,
@@ -890,31 +908,67 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             picked = preferred
         return picked
 
-    def _prepare_active_zapret_runtime(self, selected_bundle_root: Path, selected_bundle_id: str) -> Path:
+    def _prepare_active_zapret_runtime(self, selected_bundle_root: Path, selected_bundle_id: str, selected_script_name: str) -> Path:
         self._cleanup_inactive_zapret_runtimes()
         active_root = self._next_active_runtime_dir()
-        shutil.copytree(selected_bundle_root, active_root, dirs_exist_ok=True)
+        base_root = self.storage.paths.runtime_dir / "zapret-discord-youtube"
+        if base_root.exists():
+            shutil.copytree(base_root, active_root, dirs_exist_ok=True, ignore=self._runtime_copy_ignore)
+        else:
+            shutil.copytree(selected_bundle_root, active_root, dirs_exist_ok=True, ignore=self._runtime_copy_ignore)
 
         lists_target = active_root / "lists"
+        bin_target = active_root / "bin"
         utils_target = active_root / "utils"
         lists_target.mkdir(parents=True, exist_ok=True)
+        bin_target.mkdir(parents=True, exist_ok=True)
         utils_target.mkdir(parents=True, exist_ok=True)
-        base_utils = self.storage.paths.runtime_dir / "zapret-discord-youtube" / "utils"
-        if base_utils.exists():
-            for item in base_utils.glob("*"):
-                if item.is_file() and not (utils_target / item.name).exists():
-                    shutil.copy2(item, utils_target / item.name)
+
         layered_bundles = self._get_zapret_bundles(enabled_only=True)
         for bundle in layered_bundles:
             bundle_id = bundle["id"]
-            if bundle_id == selected_bundle_id:
-                continue
-            lists_source = Path(bundle["path"]) / "lists"
+            bundle_root = Path(bundle["path"])
+            if bundle_id != "base":
+                self._overlay_zapret_bundle_runtime(active_root, bundle_root)
+            lists_source = bundle_root / "lists"
             if not lists_source.exists():
                 continue
             self._merge_lists_into_target(lists_target, lists_source)
+
+        selected_script = selected_bundle_root / selected_script_name
+        if selected_script.exists():
+            shutil.copy2(selected_script, active_root / selected_script.name)
+
         self._apply_user_collection_overrides(lists_target)
+        self._materialize_visible_merged_runtime(active_root)
         return active_root
+
+    def _overlay_zapret_bundle_runtime(self, active_root: Path, bundle_root: Path) -> None:
+        for script in bundle_root.glob("*.bat"):
+            if script.name.lower().startswith("service"):
+                continue
+            shutil.copy2(script, active_root / script.name)
+
+        for folder_name in ("bin", "utils"):
+            source_dir = bundle_root / folder_name
+            target_dir = active_root / folder_name
+            if not source_dir.exists():
+                continue
+            target_dir.mkdir(parents=True, exist_ok=True)
+            for source in source_dir.glob("*"):
+                if source.is_file():
+                    shutil.copy2(source, target_dir / source.name)
+
+    def _materialize_visible_merged_runtime(self, active_root: Path) -> None:
+        target_root = self.storage.paths.merged_runtime_dir / "zapret"
+        if target_root.exists():
+            shutil.rmtree(target_root, ignore_errors=True)
+        shutil.copytree(active_root, target_root, dirs_exist_ok=True, ignore=self._runtime_copy_ignore)
+
+    def _runtime_copy_ignore(self, directory: str, names: list[str]) -> set[str]:
+        ignored_names = {".git", ".github", "__pycache__", ".mypy_cache", ".pytest_cache"}
+        ignored_suffixes = {".pyc", ".pyo"}
+        return {name for name in names if name in ignored_names or Path(name).suffix.lower() in ignored_suffixes}
 
     def _merge_lists_into_target(self, target_lists: Path, source_lists: Path) -> None:
         for source in source_lists.glob("*.txt"):

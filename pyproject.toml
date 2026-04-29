@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "pyinstaller>=6.6",
     "nuitka>=2.7",
+    "Pillow>=10.0",
 ]
 
 [project.scripts]

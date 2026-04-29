@@ -1,7 +1,11 @@
 param(
     [string]$Python = ".\.venv\Scripts\python.exe",
     [string]$PayloadDir = "installer_payload",
-    [string]$OutputDir = "dist_installer"
+    [string]$OutputDir = "dist_installer",
+    [string]$ReleaseDir = "release_1.4.2",
+    [string]$X64Source = "",
+    [string]$Arm64Source = "",
+    [switch]$SkipPrepareRelease
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,12 +15,23 @@ Set-Location $root
 
 & $Python scripts\sync_app_icon.py
 if ($LASTEXITCODE -ne 0) { throw "sync_app_icon.py failed with exit code $LASTEXITCODE" }
-
-$payloadRoot = Join-Path $root $PayloadDir
-$payloadX64 = Join-Path $payloadRoot "win_x64.zip"
-$payloadArm64 = Join-Path $payloadRoot "win_arm64.zip"
-if (-not (Test-Path $payloadX64)) { throw "installer payload missing: $payloadX64" }
-if (-not (Test-Path $payloadArm64)) { throw "installer payload missing: $payloadArm64" }
+if (-not $SkipPrepareRelease) {
+    $prepareArgs = @(
+        "scripts\prepare_nuitka_release.py",
+        "--payload-dir",
+        $PayloadDir,
+        "--release-dir",
+        $ReleaseDir
+    )
+    if ($X64Source) {
+        $prepareArgs += @("--x64-source", $X64Source)
+    }
+    if ($Arm64Source) {
+        $prepareArgs += @("--arm64-source", $Arm64Source)
+    }
+    & $Python @prepareArgs
+    if ($LASTEXITCODE -ne 0) { throw "prepare_nuitka_release.py failed with exit code $LASTEXITCODE" }
+}
 
 & $Python -m nuitka `
   --onefile `
