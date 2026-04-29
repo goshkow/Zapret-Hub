@@ -28,6 +28,20 @@ def _snapshot(context) -> dict[str, Any]:
     }
 
 
+def _mods_payload(context) -> dict[str, Any]:
+    return {
+        "index": context.mods.fetch_index(),
+        "installed": list(context.mods.list_installed()),
+    }
+
+
+def _restart_zapret_if_running(context) -> None:
+    states = {item.component_id: item for item in context.processes.list_states()}
+    if states.get("zapret") and states["zapret"].status == "running":
+        context.processes.stop_component("zapret")
+        context.processes.start_component("zapret")
+
+
 def _worker_main(task_queue, result_queue) -> None:
     from zapret_hub.bootstrap import bootstrap_application
 
@@ -65,21 +79,43 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
         states = {item.component_id: item for item in context.processes.list_states()}
         active_ids = [c.id for c in components if c.enabled]
         running_ids = {cid for cid in active_ids if states.get(cid) and states[cid].status == "running"}
-        if running_ids == set(active_ids):
-            for cid in active_ids:
+        if running_ids:
+            for cid in list(running_ids):
                 context.processes.stop_component(cid)
             mode = "disconnect"
         else:
             for cid in active_ids:
-                if cid not in running_ids:
-                    context.processes.start_component(cid)
+                context.processes.start_component(cid)
             mode = "connect"
         result = {"mode": mode}
         result.update(_snapshot(context))
         return result
 
+    if action == "load_startup_snapshot":
+        current = context.settings.get()
+        if not str(current.selected_zapret_general or "").strip():
+            options = context.processes.list_zapret_generals()
+            if options:
+                context.settings.update(selected_zapret_general=str(options[0]["id"]))
+        result = _snapshot(context)
+        result.update(_mods_payload(context))
+        result["general_options"] = list(context.processes.list_zapret_generals())
+        return result
+
     if action == "start_enabled_components":
         context.processes.start_enabled_components()
+        return _snapshot(context)
+
+    if action == "start_component":
+        component_id = str(payload.get("component_id", "")).strip()
+        if component_id:
+            context.processes.start_component(component_id)
+        return _snapshot(context)
+
+    if action == "stop_component":
+        component_id = str(payload.get("component_id", "")).strip()
+        if component_id:
+            context.processes.stop_component(component_id)
         return _snapshot(context)
 
     if action == "apply_settings":
@@ -153,14 +189,86 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
         mod_id = str(payload.get("mod_id", "")).strip()
         if not mod_id:
             return {}
+        states = {item.component_id: item for item in context.processes.list_states()}
+        zapret_was_running = bool(states.get("zapret") and states["zapret"].status == "running")
         installed = {item.id: item for item in context.mods.list_installed()}
         if mod_id not in installed:
             context.mods.install(mod_id)
             installed = {item.id: item for item in context.mods.list_installed()}
         if mod_id in installed:
             context.mods.set_enabled(mod_id, not installed[mod_id].enabled)
+        try:
+            context.files._invalidate_collection_cache()
+            context.files.rebuild_materialized_collections()
+        except Exception:
+            pass
+        if zapret_was_running:
+            try:
+                context.processes.stop_component("zapret")
+                context.processes.start_component("zapret")
+            except Exception:
+                pass
         result = {"mod_id": mod_id}
         result.update(_snapshot(context))
+        result.update(_mods_payload(context))
+        return result
+
+    if action == "install_mod":
+        mod_id = str(payload.get("mod_id", "")).strip()
+        if mod_id:
+            context.mods.install(mod_id)
+        result = {"mod_id": mod_id}
+        result.update(_snapshot(context))
+        result.update(_mods_payload(context))
+        return result
+
+    if action == "remove_mod":
+        mod_id = str(payload.get("mod_id", "")).strip()
+        if mod_id:
+            context.mods.remove(mod_id)
+        result = {"mod_id": mod_id}
+        result.update(_snapshot(context))
+        result.update(_mods_payload(context))
+        return result
+
+    if action == "import_mod_from_github":
+        repo_url = str(payload.get("repo_url", "")).strip()
+        previous_selected_general = str(payload.get("previous_selected_general", "")).strip()
+        if repo_url:
+            context.mods.import_from_github(repo_url)
+            if previous_selected_general:
+                context.settings.update(selected_zapret_general=previous_selected_general)
+        result = {"repo_url": repo_url}
+        result.update(_snapshot(context))
+        result.update(_mods_payload(context))
+        result["general_options"] = list(context.processes.list_zapret_generals())
+        return result
+
+    if action == "import_mod_from_paths":
+        raw_paths = payload.get("paths", []) or []
+        paths = [str(item).strip() for item in raw_paths if str(item).strip()]
+        previous_selected_general = str(payload.get("previous_selected_general", "")).strip()
+        if paths:
+            context.mods.import_from_paths(paths)
+            if previous_selected_general:
+                context.settings.update(selected_zapret_general=previous_selected_general)
+        result = {"paths": paths}
+        result.update(_snapshot(context))
+        result.update(_mods_payload(context))
+        result["general_options"] = list(context.processes.list_zapret_generals())
+        return result
+
+    if action == "import_mod_from_path":
+        path = str(payload.get("path", "")).strip()
+        previous_selected_general = str(payload.get("previous_selected_general", "")).strip()
+        if path:
+            context.mods.import_from_path(path)
+            if previous_selected_general:
+                context.settings.update(selected_zapret_general=previous_selected_general)
+        result = {"path": path}
+        result.update(_snapshot(context))
+        result.update(_mods_payload(context))
+        result["general_options"] = list(context.processes.list_zapret_generals())
         return result
 
     if action == "move_mod":
@@ -168,21 +276,80 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
         direction = int(payload.get("direction", 0) or 0)
         if mod_id and direction:
             context.mods.move(mod_id, direction)
-        return _snapshot(context)
+            try:
+                context.files._invalidate_collection_cache()
+                context.files.rebuild_materialized_collections()
+            except Exception:
+                pass
+        result = _snapshot(context)
+        result.update(_mods_payload(context))
+        return result
 
     if action == "set_mod_emoji":
         mod_id = str(payload.get("mod_id", "")).strip()
         emoji = str(payload.get("emoji", "")).strip()
         if mod_id and emoji:
             context.mods.set_emoji(mod_id, emoji)
-        return _snapshot(context)
+        result = _snapshot(context)
+        result.update(_mods_payload(context))
+        return result
 
     if action == "restart_zapret_if_running":
-        states = {item.component_id: item for item in context.processes.list_states()}
-        if states.get("zapret") and states["zapret"].status == "running":
-            context.processes.stop_component("zapret")
-            context.processes.start_component("zapret")
+        _restart_zapret_if_running(context)
         return _snapshot(context)
+
+    if action == "add_collection_values":
+        collection_id = str(payload.get("collection_id", "")).strip()
+        raw = str(payload.get("raw", "") or "")
+        values = context.files.add_collection_values(collection_id, raw)
+        _restart_zapret_if_running(context)
+        result = _snapshot(context)
+        result["files_payload"] = {
+            "mode_index": 1,
+            "collection_id": collection_id,
+            "collection_values": list(values),
+        }
+        return result
+
+    if action == "remove_collection_value":
+        collection_id = str(payload.get("collection_id", "")).strip()
+        value = str(payload.get("value", "") or "")
+        values = context.files.remove_collection_value(collection_id, value)
+        _restart_zapret_if_running(context)
+        result = _snapshot(context)
+        result["files_payload"] = {
+            "mode_index": 1,
+            "collection_id": collection_id,
+            "collection_values": list(values),
+        }
+        return result
+
+    if action == "reset_user_overrides":
+        context.files.reset_user_overrides()
+        _restart_zapret_if_running(context)
+        result = _snapshot(context)
+        result["files_payload"] = {
+            "mode_index": 1,
+            "collection_id": str(payload.get("collection_id", "")).strip(),
+            "collection_values": [],
+        }
+        return result
+
+    if action == "write_file_text":
+        full_path = str(payload.get("path", "")).strip()
+        content = str(payload.get("content", "") or "")
+        if full_path:
+            context.files.write_text(full_path, content)
+        _restart_zapret_if_running(context)
+        result = _snapshot(context)
+        result["path"] = full_path
+        return result
+
+    if action == "rebuild_merge_runtime":
+        context.merge.rebuild()
+        result = _snapshot(context)
+        result.update(_mods_payload(context))
+        return result
 
     if action == "set_favorite_generals":
         favorites = [str(item).strip() for item in (payload.get("favorites", []) or []) if str(item).strip()]
@@ -248,6 +415,11 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
 
     if action == "update_zapret_runtime":
         result = context.processes.update_zapret_runtime()
+        result.update(_snapshot(context))
+        return result
+
+    if action == "update_tg_ws_proxy_runtime":
+        result = context.processes.update_tg_ws_proxy_runtime()
         result.update(_snapshot(context))
         return result
 
@@ -330,3 +502,10 @@ class BackendWorkerClient(QObject):
         if self._process.is_alive():
             self._process.terminate()
             self._process.join(timeout=2)
+
+    def request_shutdown_background(self) -> None:
+        try:
+            self._task_queue.put({"id": uuid.uuid4().hex, "action": "shutdown", "payload": {}})
+        except Exception:
+            pass
+        self._poll_timer.stop()

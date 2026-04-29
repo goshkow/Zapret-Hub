@@ -120,6 +120,14 @@ class UpdateInfo:
 
 
 @dataclass(slots=True)
+class ReleaseEntry:
+    version: str
+    body: str
+    html_url: str
+    is_latest: bool = False
+
+
+@dataclass(slots=True)
 class DiagnosticResult:
     name: str
     status: str

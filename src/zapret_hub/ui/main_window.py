@@ -8,17 +8,18 @@ import time
 import sys
 import threading
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 from zapret_hub import __version__
 from zapret_hub.domain import ComponentDefinition, ComponentState
 from PySide6.QtCore import QCoreApplication, QEasingCurve, QEvent, QEventLoop, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal, QPropertyAnimation, QParallelAnimationGroup, Property, QByteArray
-from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QIcon, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QRegion
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent, QFontMetrics, QIcon, QImage, QKeyEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QRegion, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -755,17 +756,17 @@ class ClickableCard(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setProperty("class", "fileModeCard")
         self.setProperty("hovered", False)
+        self._hover_progress = 0.0
+        self._hover_anim: QPropertyAnimation | None = None
 
     def enterEvent(self, event: QEvent) -> None:
         self.setProperty("hovered", True)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        self._animate_hover(1.0)
         super().enterEvent(event)
 
     def leaveEvent(self, event: QEvent) -> None:
         self.setProperty("hovered", False)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        self._animate_hover(0.0)
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -775,12 +776,196 @@ class ClickableCard(QFrame):
             return
         super().mouseReleaseEvent(event)
 
+    def _animate_hover(self, target: float) -> None:
+        if self._hover_anim is not None:
+            self._hover_anim.stop()
+        anim = QPropertyAnimation(self, b"hoverProgress", self)
+        anim.setDuration(170)
+        anim.setStartValue(self._hover_progress)
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.start()
+        self._hover_anim = anim
+
+    def paintEvent(self, event: QEvent) -> None:
+        super().paintEvent(event)
+        if self._hover_progress <= 0.001:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+        light = self.palette().window().color().lightnessF() > 0.72
+        if light:
+            fill = QColor(142, 169, 223, int(26 * self._hover_progress))
+            border = QColor(111, 145, 210, int(74 * self._hover_progress))
+        else:
+            fill = QColor(92, 122, 183, int(24 * self._hover_progress))
+            border = QColor(109, 145, 221, int(82 * self._hover_progress))
+        painter.setPen(QPen(border, 1.0))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(rect, 14.0, 14.0)
+
+    def _get_hover_progress(self) -> float:
+        return self._hover_progress
+
+    def _set_hover_progress(self, value: float) -> None:
+        self._hover_progress = float(value)
+        self.update()
+
+    hoverProgress = Property(float, _get_hover_progress, _set_hover_progress)
+
+
+class ExpandableDescriptionLabel(QLabel):
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self._expanded = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setProperty("class", "modBody")
+        self._sync_text()
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self._sync_text()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._expanded = not self._expanded
+            self._sync_text()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def resizeEvent(self, event: QEvent) -> None:
+        super().resizeEvent(event)
+        if not self._expanded:
+            self._sync_text()
+
+    def _sync_text(self) -> None:
+        if self._expanded:
+            self.setWordWrap(True)
+            self.setText(self._full_text)
+            self.setToolTip(self._full_text)
+            return
+        self.setWordWrap(False)
+        available = max(100, self.width() - 6)
+        metrics = QFontMetrics(self.font())
+        elided = metrics.elidedText(self._full_text, Qt.TextElideMode.ElideRight, available)
+        self.setText(elided)
+        self.setToolTip(self._full_text if elided != self._full_text else "")
+
+
+class ButtonInteractionOverlay(QWidget):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._progress = 0.0
+        self._pressed = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.hide()
+
+    def _get_progress(self) -> float:
+        return self._progress
+
+    def _set_progress(self, value: float) -> None:
+        self._progress = max(0.0, min(1.0, float(value)))
+        self.setVisible(self._progress > 0.001)
+        self.update()
+
+    progress = Property(float, _get_progress, _set_progress)
+
+    def set_pressed(self, pressed: bool) -> None:
+        self._pressed = bool(pressed)
+        self.update()
+
+    def paintEvent(self, event: QEvent) -> None:
+        if self._progress <= 0.001:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        base = self.parentWidget().palette().button().color() if self.parentWidget() is not None else QColor('#1f2430')
+        lightness = base.lightness()
+        if lightness < 128:
+            overlay = QColor(255, 255, 255)
+            max_alpha = 28 if not self._pressed else 42
+        else:
+            overlay = QColor(31, 41, 55)
+            max_alpha = 14 if not self._pressed else 22
+        overlay.setAlpha(int(max_alpha * self._progress))
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = self._resolve_radius(rect)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(overlay)
+        painter.drawRoundedRect(rect, radius, radius)
+
+    def _resolve_radius(self, rect: QRectF) -> float:
+        parent = self.parentWidget()
+        if parent is None:
+            return min(18.0, max(8.0, min(rect.width(), rect.height()) / 2.0))
+        explicit = parent.property("hoverRadius")
+        if explicit is not None:
+            try:
+                return float(explicit)
+            except Exception:
+                pass
+        if isinstance(parent, QPushButton):
+            return 10.0
+        button_class = str(parent.property("class") or "")
+        if button_class in {"nav", "window", "action"}:
+            return 12.0
+        return min(18.0, max(8.0, min(rect.width(), rect.height()) / 2.0))
+
+
+class ButtonInteractionFilter(QObject):
+    def __init__(self, widget: QWidget) -> None:
+        super().__init__(widget)
+        self._widget = widget
+        self._overlay = ButtonInteractionOverlay(widget)
+        self._overlay.setGeometry(widget.rect())
+        self._animation: QPropertyAnimation | None = None
+        widget.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._widget:
+            if event.type() in {QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.Move}:
+                self._overlay.setGeometry(self._widget.rect())
+                self._overlay.raise_()
+            elif event.type() == QEvent.Type.Enter:
+                self._overlay.raise_()
+                self._overlay.set_pressed(False)
+                self._animate_to(1.0, 180)
+            elif event.type() == QEvent.Type.Leave:
+                self._overlay.set_pressed(False)
+                self._animate_to(0.0, 180)
+            elif event.type() == QEvent.Type.MouseButtonPress:
+                self._overlay.raise_()
+                self._overlay.set_pressed(True)
+                self._animate_to(1.0, 90)
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                self._overlay.set_pressed(False)
+                target = 1.0 if self._widget.underMouse() else 0.0
+                self._animate_to(target, 150)
+        return super().eventFilter(watched, event)
+
+    def _animate_to(self, value: float, duration: int) -> None:
+        if self._animation is not None:
+            self._animation.stop()
+        animation = QPropertyAnimation(self._overlay, b"progress", self)
+        animation.setDuration(duration)
+        animation.setStartValue(self._overlay.progress)
+        animation.setEndValue(value)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.start()
+        self._animation = animation
+
 
 class ScrollFadeOverlay(QWidget):
     def __init__(self, scrollable: QAbstractScrollArea) -> None:
         super().__init__(scrollable.viewport())
         self._scrollable = scrollable
         self._theme_name = "night"
+        self._surface_override: QColor | None = None
         self._top_visible = False
         self._bottom_visible = False
         self._fade_height = 18
@@ -796,6 +981,10 @@ class ScrollFadeOverlay(QWidget):
         self._theme_name = theme
         self.update()
 
+    def set_surface_color(self, color: QColor | None) -> None:
+        self._surface_override = QColor(color) if isinstance(color, QColor) else None
+        self.update()
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self._scrollable.viewport() and event.type() in {QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.Paint}:
             self._sync_geometry()
@@ -804,6 +993,8 @@ class ScrollFadeOverlay(QWidget):
         return super().eventFilter(watched, event)
 
     def _surface_color(self) -> QColor:
+        if self._surface_override is not None:
+            return QColor(self._surface_override)
         if self._theme_name == "light":
             return QColor("#f4f7fc")
         if self._theme_name == "light blue":
@@ -863,6 +1054,24 @@ def _content_surface_color(theme: str) -> QColor:
     return QColor("#0d1320")
 
 
+def _files_inner_surface_color(theme: str) -> QColor:
+    if theme == "light":
+        return QColor("#ffffff")
+    if theme == "light blue":
+        return QColor("#f7fbff")
+    if theme == "oled":
+        return QColor("#13161a")
+    if theme == "night":
+        return QColor("#19263f")
+    if theme == "dark":
+        return QColor("#1a1c20")
+    return QColor("#1a1c20")
+
+
+def _files_inner_surface_css(theme: str) -> str:
+    return _files_inner_surface_color(theme).name()
+
+
 def _chrome_surface_color(theme: str) -> QColor:
     if theme == "dark":
         return QColor("#181a1d")
@@ -885,10 +1094,9 @@ def _onboarding_muted_color(theme: str) -> str:
 
 def _render_widget_snapshot(widget: QWidget) -> QPixmap:
     size = widget.size()
-    pixmap = QPixmap(size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    widget.render(pixmap, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
-    return pixmap
+    if size.isEmpty():
+        return QPixmap()
+    return widget.grab()
 
 
 class PageTransitionOverlay(QWidget):
@@ -952,20 +1160,18 @@ class PageTransitionOverlay(QWidget):
         if self._old_opacity <= 0.0 and self._new_opacity <= 0.0 and self._background_color.alpha() == 0:
             return
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         target_rect = self._content_rect if not self._content_rect.isNull() else self.rect()
         if self._background_color.alpha() > 0:
             painter.fillRect(target_rect, self._background_color)
-        target = QRectF(target_rect)
         if not self._old_pixmap.isNull() and self._old_opacity > 0.0:
             painter.save()
             painter.setOpacity(self._old_opacity)
-            painter.drawPixmap(target, self._old_pixmap, QRectF(self._old_pixmap.rect()))
+            painter.drawPixmap(target_rect.topLeft(), self._old_pixmap)
             painter.restore()
         if not self._new_pixmap.isNull() and self._new_opacity > 0.0:
             painter.save()
             painter.setOpacity(self._new_opacity)
-            painter.drawPixmap(target, self._new_pixmap, QRectF(self._new_pixmap.rect()))
+            painter.drawPixmap(target_rect.topLeft(), self._new_pixmap)
             painter.restore()
 
 
@@ -1434,10 +1640,17 @@ class SettingsDialog(AppDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, context: ApplicationContext, launch_hidden: bool = False) -> None:
+    def __init__(
+        self,
+        context: ApplicationContext,
+        launch_hidden: bool = False,
+        startup_show_onboarding: bool = False,
+        startup_snapshot: dict[str, object] | None = None,
+    ) -> None:
         super().__init__()
         self.context = context
         self._launch_hidden = launch_hidden
+        self._startup_show_onboarding = startup_show_onboarding
         self._skip_next_show_focus = launch_hidden
         self._drag_pos: QPoint | None = None
         self._tray_notifications_shown = False
@@ -1538,7 +1751,8 @@ class MainWindow(QMainWindow):
         self._logs_source_combo: QComboBox | None = None
         self._logs_stack: QStackedWidget | None = None
         self._logs_loading_label: QLabel | None = None
-        self._current_log_source = "app"
+        self._current_log_source = "all"
+        self._pending_logs_payload: dict[str, object] | None = None
         self._logs_live_timer = QTimer(self)
         self._logs_live_timer.setInterval(1000)
         self._logs_live_timer.timeout.connect(self._refresh_logs_live)
@@ -1549,9 +1763,16 @@ class MainWindow(QMainWindow):
         self._tray_general_action_group: QActionGroup | None = None
         self._update_check_in_progress = False
         self._update_prepare_dialog: AppDialog | None = None
+        self._update_check_dialog: AppDialog | None = None
+        self._update_check_label: QLabel | None = None
+        self._component_update_dialog: AppDialog | None = None
+        self._component_update_label: QLabel | None = None
         self._last_prompted_update_version = ""
+        self._resume_component_ids: list[str] = []
+        self._resume_restart_pending = False
         self._file_mode_stack: QStackedWidget | None = None
         self._file_home_page: QWidget | None = None
+        self._files_home_scroll: QScrollArea | None = None
         self._file_tags_page: QWidget | None = None
         self._file_advanced_page: QWidget | None = None
         self._file_tag_title: QLabel | None = None
@@ -1559,11 +1780,13 @@ class MainWindow(QMainWindow):
         self._file_tag_input: QLineEdit | None = None
         self._file_tag_canvas: QWidget | None = None
         self._file_tag_flow: FlowLayout | None = None
+        self._file_tag_scroll: QScrollArea | None = None
         self._files_intro_label: QLabel | None = None
         self._file_mode_cards: list[dict[str, object]] = []
         self._current_file_collection = "domains"
         self._favorite_general_buttons: dict[str, QToolButton] = {}
         self._general_options_cache: list[dict[str, str]] | None = None
+        self._general_options_refresh_in_progress = False
         self._refresh_dirty_sections = {"dashboard", "components", "mods", "files", "logs", "tray"}
         self._refresh_scheduled = False
         self._initial_refresh_pending = False
@@ -1575,9 +1798,20 @@ class MainWindow(QMainWindow):
         self._loading_overlay_fade: QPropertyAnimation | None = None
         self._loading_overlay_context = ""
         self._current_file_values_cache: list[str] = []
+        self._file_tag_render_values: list[str] = []
+        self._file_tag_render_index = 0
+        self._file_tag_render_finish_loading = False
+        self._file_tag_render_generation = 0
+        self._file_tag_render_timer = QTimer(self)
+        self._file_tag_render_timer.setSingleShot(True)
+        self._file_tag_render_timer.timeout.connect(self._render_file_tags_chunk)
         self._backend_tasks: dict[str, str] = {}
+        self._backend_attached = False
         self._component_defs_cache: dict[str, ComponentDefinition] = {}
         self._component_states_cache: dict[str, ComponentState] = {}
+        self._mods_index_cache: list[object] = []
+        self._mods_installed_cache: dict[str, object] = {}
+        self._startup_snapshot_ready = False
         self._page_blur_effect: QGraphicsBlurEffect | None = None
         self._page_opacity_effect: QGraphicsOpacityEffect | None = None
         self._page_transition_overlay: QWidget | None = None
@@ -1599,6 +1833,8 @@ class MainWindow(QMainWindow):
         self._window_fade_pending_action: str | None = None
         self._nav_highlight_initialized = False
         self._skip_next_show_fade = False
+        self._initial_show_completed = False
+        self._startup_deferred_refresh_scheduled = False
         self._files_refresh_token = 0
         self._files_loading_timer = QTimer(self)
         self._files_loading_timer.setInterval(170)
@@ -1612,6 +1848,27 @@ class MainWindow(QMainWindow):
         self._files_editor_stack: QStackedWidget | None = None
         self._file_content_refresh_token = 0
         self._pending_file_content_path = ""
+        self._preferred_file_path = ""
+        self._file_search_shell: QWidget | None = None
+        self._file_search_panel: QWidget | None = None
+        self._file_search_toggle: QToolButton | None = None
+        self._file_search_input: QLineEdit | None = None
+        self._file_search_prev_btn: QToolButton | None = None
+        self._file_search_next_btn: QToolButton | None = None
+        self._file_search_matches: list[tuple[int, int]] = []
+        self._file_search_index = -1
+        self._file_search_expanded = False
+        self._file_search_anim: QPropertyAnimation | None = None
+        self._file_search_variants: dict[str, dict[str, QWidget]] = {}
+        self._file_search_mode = "document"
+        self._file_tag_search_matches: list[QFrame] = []
+        self._file_tag_search_index = -1
+        self._files_mode_opacity_effect: QGraphicsOpacityEffect | None = None
+        self._files_mode_transition_out: QPropertyAnimation | None = None
+        self._files_mode_transition_in: QPropertyAnimation | None = None
+        self._files_mode_transition_running = False
+        self._files_loading_mode_index = 0
+        self._button_interactions: list[ButtonInteractionFilter] = []
         self._scroll_fade_overlays: list[ScrollFadeOverlay] = []
         self._smooth_scroll_helpers: list[SmoothScrollController] = []
         self._active_emoji_popup: QWidget | None = None
@@ -1626,49 +1883,98 @@ class MainWindow(QMainWindow):
             NavItem("logs", "logs.svg", self._t("Логи", "Logs")),
         ]
 
+        if isinstance(startup_snapshot, dict):
+            self._seed_startup_snapshot(startup_snapshot)
+
         self.setFixedSize(860, 520)
         self.setWindowTitle("Zapret Hub")
-        self.setWindowIcon(self._icon("app.ico"))
+        self.setWindowIcon(self._runtime_window_icon())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
         self._build_ui()
+        self._attach_button_animations_recursive(self.centralWidget())
         self._setup_tray()
-        self._prime_runtime_snapshot_cache()
-        if self._should_show_onboarding():
+        if self._startup_show_onboarding:
             self._set_onboarding_visible(True)
         self._apply_theme()
         self._sync_window_icon()
-        self.refresh_components()
-        self.refresh_mods()
         if self.context.backend is not None:
-            self.context.backend.task_finished.connect(self._on_backend_task_finished)
-            self.context.backend.task_failed.connect(self._on_backend_task_failed)
-            self.context.backend.task_progress.connect(self._on_backend_task_progress)
-        self.schedule_refresh_all()
+            self._connect_backend_signals(self.context.backend)
         if not self._launch_hidden:
-            QTimer.singleShot(240, self._prime_cached_dialogs)
-            if not self._onboarding_active:
-                QTimer.singleShot(800, self._maybe_run_first_general_autotest)
-            QTimer.singleShot(1400, self._check_updates_on_start)
             QTimer.singleShot(0, lambda: _bring_widget_to_front(self))
 
     def _t(self, ru: str, en: str) -> str:
         return ru if self.context.settings.get().language == "ru" else en
 
+    def _connect_backend_signals(self, backend) -> None:
+        try:
+            backend.task_finished.connect(self._on_backend_task_finished)
+            backend.task_failed.connect(self._on_backend_task_failed)
+            backend.task_progress.connect(self._on_backend_task_progress)
+        except Exception:
+            pass
+
+    def attach_backend_client(self, backend) -> None:
+        self.context.backend = backend
+        self._backend_attached = True
+        self._connect_backend_signals(backend)
+        if not self._startup_snapshot_ready:
+            QTimer.singleShot(0, lambda: self._submit_backend_task("load_startup_snapshot", action_id="__startup_snapshot__"))
+
+    def _themed_icon_color(self, filename: str) -> QColor | None:
+        if filename not in {"power.svg", "share.svg", "trash.svg", "search.svg", "refresh.svg"}:
+            return None
+        theme = self.context.settings.get().theme
+        if is_light_theme(theme):
+            return QColor("#2d3c57")
+        return QColor("#f3f7ff")
+
+    def _build_tinted_icon(self, icon_path: Path, color: QColor) -> QIcon:
+        base = QIcon(str(icon_path))
+        icon = QIcon()
+        for size in (14, 16, 18, 20, 24, 26, 32):
+            pixmap = base.pixmap(size, size)
+            if pixmap.isNull():
+                continue
+            painter = QPainter(pixmap)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            painter.fillRect(pixmap.rect(), color)
+            painter.end()
+            icon.addPixmap(pixmap)
+        return icon if not icon.isNull() else base
+
     def _icon(self, filename: str) -> QIcon:
-        cached = self._icon_cache.get(filename)
+        tint = self._themed_icon_color(filename)
+        cache_key = filename if tint is None else f"{filename}|{tint.name(QColor.NameFormat.HexArgb)}"
+        cached = self._icon_cache.get(cache_key)
         if cached is not None:
             return cached
         icon_path = self._icons_dir / filename
-        icon = QIcon(str(icon_path))
-        self._icon_cache[filename] = icon
+        icon = self._build_tinted_icon(icon_path, tint) if tint is not None else QIcon(str(icon_path))
+        self._icon_cache[cache_key] = icon
         return icon
 
     def _component_defs(self) -> dict[str, ComponentDefinition]:
         if self._component_defs_cache:
             return dict(self._component_defs_cache)
-        return {component.id: component for component in self.context.processes.list_components()}
+        return {}
+
+    def _seed_startup_snapshot(self, payload: dict[str, object]) -> None:
+        self._update_runtime_snapshot_from_payload(payload)
+        self._update_mods_cache_from_payload(payload)
+        self._update_general_options_from_payload(payload)
+        self._page_payload_cache["components"] = {
+            "components": payload.get("components", []),
+            "states": payload.get("states", []),
+            "general_options": payload.get("general_options", []),
+        }
+        if "index" in payload or "installed" in payload:
+            self._page_payload_cache["mods"] = {
+                "index": payload.get("index", []),
+                "installed": payload.get("installed", []),
+            }
+        self._startup_snapshot_ready = "components" in payload or "states" in payload
 
     def _should_show_onboarding(self) -> bool:
         if self._launch_hidden:
@@ -1698,21 +2004,11 @@ class MainWindow(QMainWindow):
     def _component_states(self) -> dict[str, ComponentState]:
         if self._component_states_cache:
             return dict(self._component_states_cache)
-        return {state.component_id: state for state in self.context.processes.list_states()}
+        return {}
 
     def _prime_runtime_snapshot_cache(self) -> None:
-        try:
-            self._component_defs_cache = {
-                component.id: component for component in self.context.processes.list_components()
-            }
-        except Exception:
-            self._component_defs_cache = {}
-        try:
-            self._component_states_cache = {
-                state.component_id: state for state in self.context.processes.list_states()
-            }
-        except Exception:
-            self._component_states_cache = {}
+        self._component_defs_cache = {}
+        self._component_states_cache = {}
 
     def _update_runtime_snapshot_from_payload(self, payload: object) -> None:
         if not isinstance(payload, dict):
@@ -1739,6 +2035,31 @@ class MainWindow(QMainWindow):
                         continue
             if snapshot_states:
                 self._component_states_cache = snapshot_states
+
+    def _update_mods_cache_from_payload(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        raw_index = payload.get("index")
+        raw_installed = payload.get("installed")
+        if isinstance(raw_index, list):
+            self._mods_index_cache = list(raw_index)
+        if isinstance(raw_installed, dict):
+            self._mods_installed_cache = {str(key): value for key, value in raw_installed.items()}
+        elif isinstance(raw_installed, list):
+            snapshot: dict[str, object] = {}
+            for item in raw_installed:
+                item_id = str(getattr(item, "id", "") or (item.get("id", "") if isinstance(item, dict) else ""))
+                if item_id:
+                    snapshot[item_id] = item
+            self._mods_installed_cache = snapshot
+
+    def _update_general_options_from_payload(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        raw_options = payload.get("general_options")
+        if isinstance(raw_options, list):
+            normalized = [item for item in raw_options if isinstance(item, dict) and item.get("id")]
+            self._general_options_cache = normalized
     def showEvent(self, event: QEvent) -> None:
         super().showEvent(event)
         self._sync_window_icon()
@@ -1752,26 +2073,76 @@ class MainWindow(QMainWindow):
         else:
             self._animate_window_fade(showing=True)
         self._schedule_post_show_sync()
+        if not self._initial_show_completed:
+            self._initial_show_completed = True
+            self._schedule_startup_refresh()
         if self._skip_next_show_focus:
             self._skip_next_show_focus = False
             return
         QTimer.singleShot(0, lambda: _bring_widget_to_front(self))
 
     def _schedule_post_show_sync(self) -> None:
-        self._mark_dirty("dashboard", "components", "mods", "files", "logs", "tray")
-
         def _sync() -> None:
             self._sync_power_aura_geometry()
             self._sync_nav_highlight(animated=self._nav_highlight_initialized)
             if hasattr(self, "pages") and self.pages.currentIndex() == 1:
                 self._sync_component_card_layout()
+            elif hasattr(self, "pages") and self.pages.currentIndex() == 2:
+                self._sync_mod_card_layout()
 
         QTimer.singleShot(0, _sync)
-        QTimer.singleShot(80, _sync)
-        QTimer.singleShot(180, _sync)
+        QTimer.singleShot(120, _sync)
+
+    def _schedule_startup_refresh(self) -> None:
+        if self._startup_deferred_refresh_scheduled or self._launch_hidden:
+            return
+        self._startup_deferred_refresh_scheduled = True
+
+        def _refresh_current() -> None:
+            if not self._backend_attached:
+                QTimer.singleShot(250, _refresh_current)
+                return
+            current_index = self.pages.currentIndex() if hasattr(self, "pages") else 0
+            section_map = {0: "dashboard", 1: "components", 2: "mods", 3: "files", 4: "logs"}
+            current = section_map.get(current_index, "dashboard")
+            self._mark_dirty(current, "tray")
+
+        def _refresh_rest() -> None:
+            if not self._backend_attached:
+                QTimer.singleShot(300, _refresh_rest)
+                return
+            self._mark_dirty("dashboard", "components", "mods", "files", "logs", "tray")
+
+        QTimer.singleShot(900, _refresh_current)
+        QTimer.singleShot(1800, _refresh_rest)
+        QTimer.singleShot(2600, self._prime_cached_dialogs)
+        if not self._onboarding_active:
+            QTimer.singleShot(3600, self._maybe_run_first_general_autotest)
+        QTimer.singleShot(4800, self._check_updates_on_start)
+
+    def _runtime_window_icon(self) -> QIcon:
+        png_path = self._icons_dir / "app.png"
+        if png_path.exists():
+            image = QImage(str(png_path))
+            if not image.isNull():
+                source = QPixmap.fromImage(image)
+                if not source.isNull():
+                    icon = QIcon()
+                    for size in (16, 20, 24, 32, 40, 48, 64, 96, 128, 256):
+                        icon.addPixmap(
+                            source.scaled(
+                                size,
+                                size,
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation,
+                            )
+                        )
+                    if not icon.isNull():
+                        return icon
+        return self._icon("app.ico")
 
     def _sync_window_icon(self) -> None:
-        icon = self._icon("app.ico")
+        icon = self._runtime_window_icon()
         self.setWindowIcon(icon)
         app = QCoreApplication.instance()
         if app is not None and hasattr(app, "setWindowIcon"):
@@ -1779,6 +2150,53 @@ class MainWindow(QMainWindow):
                 app.setWindowIcon(icon)  # type: ignore[attr-defined]
             except Exception:
                 pass
+
+    def _app_title_pixmap(self, size: int) -> QPixmap:
+        png_path = self._icons_dir / "app.png"
+        if png_path.exists():
+            image = QImage(str(png_path))
+            if not image.isNull():
+                pixmap = QPixmap.fromImage(image)
+                if not pixmap.isNull():
+                    app = QApplication.instance()
+                    dpr = 1.0
+                    try:
+                        if app is not None and app.primaryScreen() is not None:
+                            dpr = max(1.0, float(app.primaryScreen().devicePixelRatio()))
+                    except Exception:
+                        dpr = 1.0
+                    target_px = max(size, int(round(size * dpr)))
+                    scaled = pixmap.scaled(
+                        target_px,
+                        target_px,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    scaled.setDevicePixelRatio(dpr)
+                    return scaled
+        ico_path = self._icons_dir / "app.ico"
+        if ico_path.exists():
+            pixmap = QPixmap(str(ico_path))
+            if not pixmap.isNull():
+                return pixmap.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        return self._runtime_window_icon().pixmap(size, size)
+
+    def _prepare_page_geometry_for_index(self, index: int) -> None:
+        if not hasattr(self, "pages"):
+            return
+        page = self.pages.widget(index)
+        if isinstance(page, QWidget):
+            page.resize(self.pages.size())
+            if page.layout() is not None:
+                page.layout().activate()
+        if index == 0:
+            self._sync_power_aura_geometry()
+        elif index == 1:
+            self._sync_component_card_layout()
+        elif index == 2:
+            self._sync_mod_card_layout()
+        elif index == 3:
+            self._prepare_files_page_geometry()
 
     def _build_ui(self) -> None:
         shell = QWidget()
@@ -1825,7 +2243,7 @@ class MainWindow(QMainWindow):
         card_layout.setSpacing(10)
         icon = QLabel()
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setPixmap(self._icon("app.png").pixmap(58, 58))
+        icon.setPixmap(self._app_title_pixmap(58))
         self._loading_overlay_title = QLabel(self._t("Запуск Zapret Hub", "Launching Zapret Hub"))
         self._loading_overlay_title.setProperty("class", "title")
         self._loading_overlay_label = QLabel(self._t("Загрузка...", "Loading..."))
@@ -1850,6 +2268,13 @@ class MainWindow(QMainWindow):
         self._sync_power_aura_geometry()
         if hasattr(self, "pages") and self.pages.currentIndex() == 1:
             QTimer.singleShot(0, lambda: self._sync_component_card_layout())
+        elif hasattr(self, "pages") and self.pages.currentIndex() == 2:
+            QTimer.singleShot(0, self._sync_mod_card_layout)
+        if self._file_mode_stack is not None:
+            if self._file_mode_stack.currentIndex() == 0:
+                QTimer.singleShot(0, self._sync_files_home_layout)
+            elif self._file_mode_stack.currentIndex() == 1:
+                QTimer.singleShot(0, self._sync_file_tag_canvas_geometry)
 
     def _relayout_onboarding_content(self) -> None:
         if self._onboarding_wrap_widget is None:
@@ -1930,7 +2355,7 @@ class MainWindow(QMainWindow):
         row.setSpacing(8)
 
         icon = QLabel()
-        icon.setPixmap(self._icon("app.png").pixmap(20, 20))
+        icon.setPixmap(self._app_title_pixmap(20))
         row.addWidget(icon)
 
         title = QLabel("Zapret Hub")
@@ -2088,7 +2513,9 @@ class MainWindow(QMainWindow):
         self._page_blur_effect = None
         pages_host_layout.addWidget(self.pages)
         pages_shell_layout.addWidget(pages_host)
-        self._page_opacity_effect = None
+        self._page_opacity_effect = QGraphicsOpacityEffect(pages_host)
+        self._page_opacity_effect.setOpacity(1.0)
+        pages_host.setGraphicsEffect(self._page_opacity_effect)
         overlay = PageTransitionOverlay(body)
         overlay.setObjectName("PageTransitionOverlay")
         self._page_transition_overlay = overlay
@@ -2259,14 +2686,26 @@ class MainWindow(QMainWindow):
         power_stage.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         power_stage.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         power_stage.setStyleSheet("background: transparent;")
+        power_stage_layout = QVBoxLayout(power_stage)
+        power_stage_layout.setContentsMargins(0, 28, 0, 28)
+        power_stage_layout.setSpacing(0)
+        power_stage_layout.addStretch(1)
+        power_button_row = QHBoxLayout()
+        power_button_row.setContentsMargins(0, 0, 0, 0)
+        power_button_row.setSpacing(0)
+        power_button_row.addStretch(1)
         self.power_button = AnimatedPowerButton(power_stage)
         self.power_button.setProperty("class", "power")
         self.power_button.setIcon(self._icon("power.svg"))
         self.power_button.setIconSize(QSize(42, 42))
-        self.power_button.setGeometry(46, 28, 132, 132)
+        self.power_button.setFixedSize(132, 132)
         self.power_button.clicked.connect(self._toggle_master_runtime)
         self._attach_button_animations(self.power_button)
         self.power_button.set_power_theme(self.context.settings.get().theme)
+        power_button_row.addWidget(self.power_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        power_button_row.addStretch(1)
+        power_stage_layout.addLayout(power_button_row)
+        power_stage_layout.addStretch(1)
 
         self.power_caption = QWidget()
         self.power_caption.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -2358,7 +2797,7 @@ class MainWindow(QMainWindow):
         self._components_scroll.setWidgetResizable(True)
         self._components_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._components_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._components_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._components_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self._components_cards_root = QWidget()
         self._components_cards_root.setObjectName("ComponentsCanvas")
         self._components_cards_root.setProperty("class", "pageCanvas")
@@ -2449,6 +2888,8 @@ class MainWindow(QMainWindow):
         self.mods_scroll.setObjectName("ModsScroll")
         self.mods_scroll.setWidgetResizable(True)
         self.mods_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.mods_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.mods_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.mods_canvas = QWidget()
         self.mods_canvas.setObjectName("ModsCanvas")
         self.mods_canvas.setProperty("class", "pageCanvas")
@@ -2484,15 +2925,19 @@ class MainWindow(QMainWindow):
         chooser_scroll.setProperty("class", "pageCanvas")
         chooser_host = QWidget()
         chooser_host.setProperty("class", "pageCanvas")
+        chooser_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         chooser_host_layout = QVBoxLayout(chooser_host)
         chooser_host_layout.setContentsMargins(1, 0, 1, 12)
         chooser_host_layout.setSpacing(0)
         chooser_host_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         chooser, chooser_layout = self._card()
-        self._file_home_page = chooser_scroll
+        chooser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         chooser_layout.setContentsMargins(14, 10, 14, 14)
         chooser_layout.setSpacing(8)
+        self._file_home_page = chooser_scroll
+        self._files_home_host = chooser_host
+        self._files_home_card = chooser
         intro = QLabel(
             self._t(
                 "Выберите режим: общие и исключающие доменные листы, IP-листы, IP-исключения или полноценное редактирование файлов.",
@@ -2537,6 +2982,15 @@ class MainWindow(QMainWindow):
                 self._t("Открыть полноценный список файлов и текстовый редактор.", "Open the full file list and the text editor."),
                 "advanced",
                 "files_editor.svg",
+            ),
+            (
+                "Hosts",
+                self._t(
+                    "Открыть локальный файл .service/hosts из встроенного Zapret.",
+                    "Open the local .service/hosts file from the bundled Zapret runtime.",
+                ),
+                "hosts",
+                "files.svg",
             ),
         ]
         self._file_mode_cards = []
@@ -2592,10 +3046,13 @@ class MainWindow(QMainWindow):
         chooser_scroll.setWidget(chooser_host)
         self._register_scroll_fade(chooser_scroll)
         self._register_smooth_scroll(chooser_scroll)
+        self._files_home_scroll = chooser_scroll
 
         tags_page, tags_layout = self._card()
         self._file_tags_page = tags_page
         back_row = QHBoxLayout()
+        back_row.setContentsMargins(0, 0, 0, 0)
+        back_row.setSpacing(8)
         back_btn = QToolButton()
         back_btn.setProperty("class", "action")
         back_btn.setIcon(self._icon("back.svg"))
@@ -2603,12 +3060,12 @@ class MainWindow(QMainWindow):
         back_btn.setToolTip(self._t("Назад", "Back"))
         back_btn.clicked.connect(lambda: self._open_files_mode("home"))
         back_row.addWidget(back_btn, 0)
-        back_row.addStretch(1)
-        tags_layout.addLayout(back_row)
         tag_title = QLabel()
         tag_title.setProperty("class", "title")
         self._file_tag_title = tag_title
-        tags_layout.addWidget(tag_title)
+        back_row.addWidget(tag_title, 0)
+        back_row.addStretch(1)
+        tags_layout.addLayout(back_row)
         tag_subtitle = QLabel()
         tag_subtitle.setProperty("class", "muted")
         tag_subtitle.setWordWrap(True)
@@ -2623,12 +3080,22 @@ class MainWindow(QMainWindow):
         tag_scroll = QScrollArea()
         tag_scroll.setWidgetResizable(True)
         tag_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        tag_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        tag_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         tag_canvas = QWidget()
         tag_flow = FlowLayout(tag_canvas, margin=0, spacing=8)
         tag_canvas.setLayout(tag_flow)
         tag_scroll.setWidget(tag_canvas)
-        self._register_scroll_fade(tag_scroll)
+        tag_surface = _files_inner_surface_css(self.context.settings.get().theme)
+        tag_scroll.setStyleSheet(
+            f"QScrollArea, QScrollArea > QWidget#qt_scrollarea_viewport {{ background: {tag_surface}; border: none; }}"
+        )
+        tag_canvas.setStyleSheet(f"background: {tag_surface}; border: none;")
+        self._register_scroll_fade(tag_scroll, surface_color=_files_inner_surface_color(self.context.settings.get().theme))
         self._register_smooth_scroll(tag_scroll)
+        tag_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        tag_flow.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
+        self._file_tag_scroll = tag_scroll
         self._file_tag_canvas = tag_canvas
         self._file_tag_flow = tag_flow
         tags_stack = QStackedWidget()
@@ -2639,34 +3106,59 @@ class MainWindow(QMainWindow):
         self._files_tags_stack = tags_stack
         tags_stack.addWidget(tags_loading)
         tags_stack.addWidget(tag_scroll)
-        tags_layout.addWidget(tags_stack, 1)
+        tags_shell = QWidget(tags_page)
+        tags_shell.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        tags_shell.setAutoFillBackground(False)
+        tags_shell.setStyleSheet("background: transparent;")
+        tags_grid = QGridLayout(tags_shell)
+        tags_grid.setContentsMargins(0, 0, 0, 0)
+        tags_grid.setSpacing(0)
+        tags_grid.addWidget(tags_stack, 0, 0)
+        tag_search_shell, tag_search_panel, tag_search_toggle, tag_search_input, tag_search_prev_btn, tag_search_next_btn = self._build_file_search_variant(
+            tags_shell,
+            placeholder=self._t("Найти значение", "Find value"),
+        )
+        tags_grid.addWidget(tag_search_shell, 0, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        tags_layout.addWidget(tags_shell, 1)
+        self._register_file_search_variant(
+            "tags",
+            shell=tag_search_shell,
+            panel=tag_search_panel,
+            toggle=tag_search_toggle,
+            field=tag_search_input,
+            prev_btn=tag_search_prev_btn,
+            next_btn=tag_search_next_btn,
+        )
         advanced_btn = QPushButton(self._t("Открыть редактор файлов", "Open file editor"))
         advanced_btn.clicked.connect(lambda: self._open_files_mode("advanced"))
         tags_layout.addWidget(advanced_btn)
+        tags_layout.addSpacing(12)
 
         advanced_page = QWidget()
         self._file_advanced_page = advanced_page
         advanced_root = QVBoxLayout(advanced_page)
         advanced_root.setContentsMargins(1, 0, 1, 12)
         advanced_root.setSpacing(12)
-        advanced_top = QHBoxLayout()
         advanced_back = QToolButton()
         advanced_back.setProperty("class", "action")
         advanced_back.setIcon(self._icon("back.svg"))
         advanced_back.setIconSize(QSize(16, 16))
         advanced_back.setToolTip(self._t("Назад", "Back"))
         advanced_back.clicked.connect(lambda: self._open_files_mode("home"))
-        advanced_top.addWidget(advanced_back, 0)
-        advanced_top.addStretch(1)
-        advanced_root.addLayout(advanced_top)
         advanced_split = QHBoxLayout()
         advanced_split.setContentsMargins(0, 0, 0, 0)
         advanced_split.setSpacing(12)
 
         left, left_layout = self._card()
+        left_title_row = QHBoxLayout()
+        left_title_row.setContentsMargins(0, 0, 0, 0)
+        left_title_row.setSpacing(8)
+        left_title_row.addWidget(advanced_back, 0, Qt.AlignmentFlag.AlignVCenter)
         left_title = QLabel(self._t("Список файлов", "Files list"))
         left_title.setProperty("class", "title")
-        left_layout.addWidget(left_title)
+        left_title_row.addWidget(left_title, 0, Qt.AlignmentFlag.AlignVCenter)
+        left_title_row.addStretch(1)
+        left_layout.addLayout(left_title_row)
         self.files_list = QListWidget()
         self.files_list.setObjectName("FilesList")
         self.files_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -2703,6 +3195,7 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(path_row)
         self.file_editor = QTextEdit()
         self.file_editor.setObjectName("FileEditor")
+        self.file_editor.textChanged.connect(self._on_file_editor_text_changed)
         editor_stack = QStackedWidget()
         editor_loading = QLabel(self._t("Загрузка файла...", "Loading file..."))
         editor_loading.setProperty("class", "muted")
@@ -2711,7 +3204,32 @@ class MainWindow(QMainWindow):
         self._files_editor_stack = editor_stack
         editor_stack.addWidget(editor_loading)
         editor_stack.addWidget(self.file_editor)
-        right_layout.addWidget(editor_stack, 1)
+        editor_shell = QWidget()
+        editor_shell.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        editor_shell.setAutoFillBackground(False)
+        editor_shell.setStyleSheet("background: transparent;")
+        editor_grid = QGridLayout(editor_shell)
+        editor_grid.setContentsMargins(0, 0, 0, 0)
+        editor_grid.setSpacing(0)
+        editor_grid.addWidget(editor_stack, 0, 0)
+
+        search_shell, search_panel, search_toggle, search_input, search_prev_btn, search_next_btn = self._build_file_search_variant(
+            editor_shell,
+            placeholder=self._t("Найти в файле", "Find in file"),
+        )
+        editor_grid.addWidget(search_shell, 0, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        self._register_file_search_variant(
+            "document",
+            shell=search_shell,
+            panel=search_panel,
+            toggle=search_toggle,
+            field=search_input,
+            prev_btn=search_prev_btn,
+            next_btn=search_next_btn,
+        )
+        self._use_file_search_variant("document")
+
+        right_layout.addWidget(editor_shell, 1)
         save_btn = QPushButton(self._t("Сохранить файл", "Save file"))
         save_btn.clicked.connect(self._save_current_file)
         self._attach_button_animations(save_btn)
@@ -2722,6 +3240,7 @@ class MainWindow(QMainWindow):
         stack.addWidget(chooser_scroll)
         stack.addWidget(tags_page)
         stack.addWidget(advanced_page)
+        self._files_mode_opacity_effect = None
         root.addWidget(stack, 1)
         return page
 
@@ -2755,6 +3274,7 @@ class MainWindow(QMainWindow):
         root.addLayout(top)
         self.logs_text = QTextEdit()
         self.logs_text.setReadOnly(True)
+        self.logs_text.selectionChanged.connect(self._on_logs_selection_changed)
         self._register_scroll_fade(self.logs_text)
         self._register_smooth_scroll(self.logs_text)
         logs_stack = QStackedWidget()
@@ -2769,7 +3289,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _setup_tray(self) -> None:
-        self.tray_icon = QSystemTrayIcon(self._icon("app.ico"), self)
+        self.tray_icon = QSystemTrayIcon(self._runtime_window_icon(), self)
         menu = QMenu(self)
         show_action = QAction(self._t("Открыть", "Open"), self)
         toggle_action = QAction(self._t("Компоненты", "Components"), self)
@@ -2837,12 +3357,66 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 self._animate_window_fade(showing=False, action="tray")
                 return
-            self._force_exit = True
             event.ignore()
-            self._animate_window_fade(showing=False, action="exit")
+            self._begin_fast_exit()
             return
         event.accept()
         super().closeEvent(event)
+
+    def nativeEvent(self, eventType: QByteArray, message: int) -> tuple[bool, int]:
+        if sys.platform.startswith("win"):
+            try:
+                msg = ctypes.wintypes.MSG.from_address(int(message))  # type: ignore[attr-defined]
+                wm_powerbroadcast = 0x0218
+                pbt_apmsuspend = 0x0004
+                pbt_apmresumeautomatic = 0x0012
+                pbt_apmresumesuspend = 0x0007
+                if int(msg.message) == wm_powerbroadcast:
+                    if int(msg.wParam) == pbt_apmsuspend:
+                        QTimer.singleShot(0, self._handle_system_suspend)
+                    elif int(msg.wParam) in {pbt_apmresumeautomatic, pbt_apmresumesuspend}:
+                        QTimer.singleShot(1200, self._handle_system_resume)
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
+
+    def _handle_system_suspend(self) -> None:
+        if self._resume_restart_pending:
+            return
+        running_ids: list[str] = []
+        try:
+            states = self._component_states()
+            components = self._component_defs()
+            for component_id, component in components.items():
+                state = states.get(component_id)
+                if getattr(component, "enabled", False) and state is not None and getattr(state, "status", "") == "running":
+                    running_ids.append(component_id)
+        except Exception:
+            running_ids = []
+        self._resume_component_ids = list(running_ids)
+        self._resume_restart_pending = bool(running_ids)
+        for component_id in running_ids:
+            try:
+                self.context.processes.stop_component(component_id)
+            except Exception:
+                continue
+        if running_ids:
+            self._mark_dirty("dashboard", "components", "tray")
+
+    def _handle_system_resume(self) -> None:
+        if not self._resume_restart_pending:
+            return
+        restart_ids = list(self._resume_component_ids)
+        self._resume_component_ids = []
+        self._resume_restart_pending = False
+        if not restart_ids:
+            return
+        for component_id in restart_ids:
+            try:
+                self.context.processes.start_component(component_id)
+            except Exception:
+                continue
+        self._mark_dirty("dashboard", "components", "tray")
 
     def _restore_from_tray(self) -> None:
         self._sync_window_icon()
@@ -2896,8 +3470,16 @@ class MainWindow(QMainWindow):
         self._restore_from_tray()
 
     def _exit_application(self) -> None:
+        self._begin_fast_exit()
+
+    def _begin_fast_exit(self) -> None:
         self._force_exit = True
-        self._animate_window_fade(showing=False, action="exit")
+        if self._window_opacity_animation is not None:
+            self._window_opacity_animation.stop()
+            self._window_opacity_animation = None
+        self._skip_next_show_fade = False
+        self._skip_next_show_focus = False
+        self._animate_window_fade(showing=False, action="exit-fast")
 
     def _quit_for_update(self) -> None:
         self._force_exit = True
@@ -2906,18 +3488,18 @@ class MainWindow(QMainWindow):
         self._window_fade_pending_action = None
         self.setWindowOpacity(1.0)
         self.hide()
-        self._shutdown_runtime()
+        self._shutdown_runtime(blocking=True)
         app = QCoreApplication.instance()
         if app is not None:
             QTimer.singleShot(0, app.quit)
 
     def _finalize_exit(self) -> None:
-        self._shutdown_runtime()
+        self._shutdown_runtime(blocking=False)
         app = QCoreApplication.instance()
         if app is not None:
-            app.quit()
+            QTimer.singleShot(0, app.quit)
 
-    def _shutdown_runtime(self) -> None:
+    def _shutdown_runtime(self, *, blocking: bool) -> None:
         if self._shutdown_started:
             return
         self._shutdown_started = True
@@ -2926,7 +3508,15 @@ class MainWindow(QMainWindow):
         self._general_test_eta_timer.stop()
         self._general_test_running = False
         try:
-            self.context.processes.stop_all()
+            if self.context.backend is not None:
+                if blocking:
+                    self.context.backend.stop()
+                else:
+                    self.context.backend.request_shutdown_background()
+            elif blocking:
+                self.context.processes.stop_all()
+            else:
+                threading.Thread(target=self.context.processes.stop_all, daemon=True).start()
         except Exception:
             pass
         if hasattr(self, "tray_icon") and self.tray_icon is not None:
@@ -2975,11 +3565,8 @@ class MainWindow(QMainWindow):
             self._tray_toggle_action.setText(f"{self._t('Компоненты', 'Components')}: {state_text}")
 
     def _should_minimize_to_tray(self) -> bool:
-        # в трей уходим только когда реально есть активный runtime
-        try:
-            states = self._component_states()
-        except Exception:
-            return False
+        # В close path используем только последний snapshot, без live runtime вызовов.
+        states = self._component_states()
         for component_id in self._master_active_components():
             state = states.get(component_id)
             if state and state.status == "running":
@@ -2989,6 +3576,20 @@ class MainWindow(QMainWindow):
     def _attach_button_animations(self, widget: QWidget) -> None:
         if isinstance(widget, AnimatedNavButton):
             widget.set_nav_theme(self.context.settings.get().theme)
+            return
+        if isinstance(widget, AnimatedPowerButton):
+            return
+        if isinstance(widget, (QPushButton, QToolButton)):
+            marker = widget.property("_interactionBound")
+            if not marker:
+                widget.setProperty("_interactionBound", True)
+                self._button_interactions.append(ButtonInteractionFilter(widget))
+
+    def _attach_button_animations_recursive(self, root: QWidget | None) -> None:
+        if root is None:
+            return
+        for widget in root.findChildren(QWidget):
+            self._attach_button_animations(widget)
 
     def _animate_button_opacity(self, widget: QWidget, target: float, duration: int) -> None:
         return
@@ -2998,6 +3599,14 @@ class MainWindow(QMainWindow):
             if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Comma, Qt.Key.Key_Semicolon):
                 self._commit_tag_input()
                 return True
+        if watched is self._file_search_input and isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:
+                self._toggle_file_search(False)
+                return True
+        if self._file_search_expanded and self._file_search_panel is not None and event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
+            panel_rect = QRect(self._file_search_panel.mapToGlobal(QPoint(0, 0)), self._file_search_panel.size())
+            if not panel_rect.contains(event.globalPosition().toPoint()):
+                self._toggle_file_search(False)
         if self._active_emoji_popup is not None:
             if event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
                 popup = self._active_emoji_popup
@@ -3025,46 +3634,94 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _switch_page(self, index: int) -> None:
-        if self._active_emoji_popup is not None:
-            try:
-                self._active_emoji_popup.close()
-            except Exception:
-                pass
-            self._active_emoji_popup = None
-            app = QCoreApplication.instance()
-            if app is not None:
+        current_index = self.pages.currentIndex()
+        try:
+            if self._active_emoji_popup is not None:
                 try:
-                    app.removeEventFilter(self)
+                    self._active_emoji_popup.close()
                 except Exception:
                     pass
-        for i, btn in enumerate(self._nav_buttons):
-            btn.setChecked(i == index)
-        self._sync_nav_highlight(animated=True)
-        if index != self.pages.currentIndex():
-            try:
-                self._animate_page_switch(index)
-            except Exception:
-                self._page_transition_running = False
-                self._page_transition_started_at = 0.0
-                self.pages.setCurrentIndex(index)
-                if self._pages_shell is not None:
-                    self._pages_shell.show()
-                if self._page_transition_overlay is not None:
-                    self._page_transition_overlay.hide()
-                    self._page_transition_overlay.clear_transition()
-        self._set_logs_live_enabled(index == 4)
-        section_map = {
-            0: "dashboard",
-            1: "components",
-            2: "mods",
-            3: "files",
-            4: "logs",
-        }
-        section = section_map.get(index)
-        if section:
-            self._mark_dirty(section)
-        else:
-            self._schedule_dirty_refresh()
+                self._active_emoji_popup = None
+                app = QCoreApplication.instance()
+                if app is not None:
+                    try:
+                        app.removeEventFilter(self)
+                    except Exception:
+                        pass
+            for i, btn in enumerate(self._nav_buttons):
+                btn.setChecked(i == index)
+            self._sync_nav_highlight(animated=True)
+            if current_index == 3 and index != 3:
+                self._cancel_file_tag_render()
+            if index == 1:
+                try:
+                    cached = self._page_payload_cache.get("components")
+                    if isinstance(cached, dict):
+                        self.refresh_components(cached)
+                    else:
+                        self.refresh_components(self._build_components_cached_payload())
+                except Exception as error:
+                    self.context.logging.log("error", "components_prewarm_failed", error=str(error))
+                    try:
+                        self.refresh_components({"components": [], "states": []})
+                    except Exception:
+                        pass
+                self._sync_component_card_layout()
+                QTimer.singleShot(0, self._sync_component_card_layout)
+                try:
+                    self._request_page_refresh("components")
+                except Exception as error:
+                    self.context.logging.log("error", "components_refresh_request_failed", error=str(error))
+            elif index == 0:
+                self.refresh_dashboard()
+                self._sync_power_aura_geometry()
+            elif index == 2:
+                cached = self._page_payload_cache.get("mods")
+                if cached is not None:
+                    self.refresh_mods(cached)
+                    self._sync_mod_card_layout()
+                else:
+                    self._request_page_refresh("mods")
+                self._sync_mod_card_layout()
+            elif index == 3:
+                cached = self._page_payload_cache.get("files")
+                if isinstance(cached, dict):
+                    self.refresh_files(cached)
+                else:
+                    self._set_files_mode_loading(True)
+                self._prepare_files_page_geometry()
+                self._request_page_refresh("files")
+            if index != self.pages.currentIndex():
+                self._prepare_page_geometry_for_index(index)
+                try:
+                    self._animate_page_switch(index)
+                except Exception as error:
+                    self.context.logging.log("error", "switch_page_animation_failed", index=index, error=str(error))
+                    self._cancel_page_transition()
+                    self.pages.setCurrentIndex(index)
+                    if self._pages_shell is not None:
+                        self._pages_shell.show()
+            self._set_logs_live_enabled(index == 4)
+            section_map = {
+                0: "dashboard",
+                1: "components",
+                2: "mods",
+                3: "files",
+                4: "logs",
+            }
+            section = section_map.get(index)
+            if section:
+                self._mark_dirty(section)
+            else:
+                self._schedule_dirty_refresh()
+        except Exception as error:
+            self.context.logging.log("error", "switch_page_failed", index=index, error=str(error))
+            self._cancel_page_transition()
+            actual_index = self.pages.currentIndex()
+            for i, btn in enumerate(self._nav_buttons):
+                btn.setChecked(i == actual_index)
+            self._sync_nav_highlight(animated=False)
+            self._set_logs_live_enabled(actual_index == 4)
 
     def _sync_nav_highlight(self, *, animated: bool) -> None:
         sidebar = self.findChild(SidebarPanel, "Sidebar")
@@ -3095,6 +3752,8 @@ class MainWindow(QMainWindow):
         self._page_transition_in = None
         self._page_transition_running = False
         self._page_transition_started_at = 0.0
+        if self._page_opacity_effect is not None:
+            self._page_opacity_effect.setOpacity(1.0)
         if self._page_transition_overlay is not None:
             self._page_transition_overlay.hide()
             self._page_transition_overlay.set_background_color(QColor(0, 0, 0, 0))
@@ -3103,10 +3762,8 @@ class MainWindow(QMainWindow):
             self._pages_shell.show()
 
     def _animate_page_switch(self, index: int) -> None:
-        overlay = self._page_transition_overlay
-        pages_shell = self._pages_shell
-        surface = self._content_surface
-        if overlay is None or pages_shell is None or surface is None:
+        effect = self._page_opacity_effect
+        if effect is None:
             self.pages.setCurrentIndex(index)
             return
         if self._page_transition_running:
@@ -3116,29 +3773,22 @@ class MainWindow(QMainWindow):
         self._page_transition_target = index
         self._page_transition_running = True
         self._page_transition_started_at = time.monotonic()
-
-        self._reposition_page_transition_overlay()
-        old_pixmap = pages_shell.grab()
-        overlay.set_background_color(_content_surface_color(self.context.settings.get().theme))
-        overlay.set_old_pixmap(old_pixmap)
-        overlay.set_new_pixmap(None)
-        overlay.oldOpacity = 1.0
-        overlay.newOpacity = 0.0
-        overlay.raise_()
-        overlay.show()
-        pages_shell.hide()
-
-        fade_out = QPropertyAnimation(overlay, b"oldOpacity", self)
-        fade_out.setDuration(85)
+        fade_out = QPropertyAnimation(effect, b"opacity", self)
+        fade_out.setDuration(60)
         fade_out.setStartValue(1.0)
         fade_out.setEndValue(0.0)
-        fade_out.setEasingCurve(QEasingCurve.Type.InCubic)
+        fade_out.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
         def _finish() -> None:
-            pages_shell.show()
-            overlay.hide()
-            overlay.set_background_color(QColor(0, 0, 0, 0))
-            overlay.clear_transition()
+            if self.pages.currentIndex() == 0:
+                self.refresh_dashboard()
+                self._sync_power_aura_geometry()
+            elif self.pages.currentIndex() == 1:
+                self._sync_component_card_layout()
+            elif self.pages.currentIndex() == 2:
+                self._sync_mod_card_layout()
+            elif self.pages.currentIndex() == 3:
+                self._prepare_files_page_geometry()
             self._page_transition_running = False
             self._page_transition_started_at = 0.0
             self._page_transition_target = self.pages.currentIndex()
@@ -3147,41 +3797,21 @@ class MainWindow(QMainWindow):
 
         def _start_fade_in() -> None:
             self.pages.setCurrentIndex(index)
-            current_index = self.pages.currentIndex()
-            current_widget = self.pages.currentWidget()
-            if current_widget is not None and current_widget.layout() is not None:
-                current_widget.layout().activate()
-            if current_index == 0:
-                self._sync_power_aura_geometry()
-            elif current_index == 1:
-                self._sync_component_card_layout()
-                QTimer.singleShot(0, self._sync_component_card_layout)
-                QTimer.singleShot(80, self._sync_component_card_layout)
-            self.pages.updateGeometry()
-            pages_shell.updateGeometry()
-            surface.updateGeometry()
-            self._reposition_page_transition_overlay()
-            pages_shell.show()
-            self.pages.repaint()
-            pages_shell.repaint()
-            surface.repaint()
-            QCoreApplication.processEvents()
-            new_pixmap = pages_shell.grab()
-            pages_shell.hide()
-            overlay.set_old_pixmap(None)
-            overlay.set_new_pixmap(new_pixmap)
+            if index == 0:
+                self.refresh_dashboard()
+            self._prepare_page_geometry_for_index(index)
+            fade_in = QPropertyAnimation(effect, b"opacity", self)
+            fade_in.setDuration(110)
+            fade_in.setStartValue(0.0)
+            fade_in.setEndValue(1.0)
+            fade_in.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            self._page_transition_in = fade_in
+            fade_in.finished.connect(_finish)
             fade_in.start()
 
-        fade_in = QPropertyAnimation(overlay, b"newOpacity", self)
-        fade_in.setDuration(100)
-        fade_in.setStartValue(0.0)
-        fade_in.setEndValue(1.0)
-        fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-        fade_out.finished.connect(_start_fade_in)
-        fade_in.finished.connect(_finish)
         self._page_transition_out = fade_out
-        self._page_transition_in = fade_in
+        self._page_transition_in = None
+        fade_out.finished.connect(_start_fade_in)
         fade_out.start()
         return
 
@@ -3189,7 +3819,8 @@ class MainWindow(QMainWindow):
         if self._window_opacity_animation is not None:
             self._window_opacity_animation.stop()
         animation = QPropertyAnimation(self, QByteArray(b"windowOpacity"), self)
-        animation.setDuration(170 if showing else 130)
+        fade_out_duration = 95 if action == "exit-fast" else 130
+        animation.setDuration(170 if showing else fade_out_duration)
         animation.setEasingCurve(QEasingCurve.Type.OutCubic if showing else QEasingCurve.Type.InCubic)
         if showing:
             self.setWindowOpacity(0.0)
@@ -3212,7 +3843,7 @@ class MainWindow(QMainWindow):
                 elif pending == "minimize":
                     self.showMinimized()
                     QTimer.singleShot(0, lambda: self.setWindowOpacity(1.0))
-                elif pending == "exit":
+                elif pending in {"exit", "exit-fast"}:
                     self.setWindowOpacity(1.0)
                     self.hide()
                     QTimer.singleShot(0, self._finalize_exit)
@@ -3300,9 +3931,26 @@ class MainWindow(QMainWindow):
         payload = message.get("payload", {})
         self.context.settings.reload()
         self._update_runtime_snapshot_from_payload(payload)
-        if action in {"toggle_mod", "apply_settings", "select_general", "toggle_component_enabled", "move_mod", "set_mod_emoji", "update_zapret_runtime"}:
+        self._update_mods_cache_from_payload(payload)
+        self._update_general_options_from_payload(payload)
+        if action in {"update_zapret_runtime", "update_tg_ws_proxy_runtime"}:
             self._invalidate_general_options_cache()
             self._page_payload_cache.clear()
+        elif action in {"toggle_mod", "toggle_component_enabled", "move_mod", "set_mod_emoji", "install_mod", "remove_mod", "import_mod_from_github", "import_mod_from_paths", "import_mod_from_path", "rebuild_merge_runtime"}:
+            self._page_payload_cache.clear()
+        if action == "load_startup_snapshot":
+            self._startup_snapshot_ready = True
+            self._page_payload_cache["components"] = {
+                "components": payload.get("components", []),
+                "states": payload.get("states", []),
+                "general_options": payload.get("general_options", []),
+            }
+            self._page_payload_cache["mods"] = {
+                "index": payload.get("index", []),
+                "installed": payload.get("installed", []),
+            }
+            self._mark_dirty("dashboard", "components", "mods", "files", "tray")
+            return
         if action == "apply_settings":
             if bool(payload.get("autostart_changed")):
                 self.context.autostart.set_enabled(bool(self.context.settings.get().autostart_windows))
@@ -3316,6 +3964,10 @@ class MainWindow(QMainWindow):
             self._ui_signals.toggle_done.emit()
             if action == "select_general":
                 self._ui_signals.component_action_done.emit("__general__")
+            return
+        if action in {"start_component", "stop_component"}:
+            self._mark_dirty("dashboard", "components", "tray")
+            self._ui_signals.component_action_done.emit(action_id)
             return
         if action == "apply_settings":
             self._ui_signals.component_action_done.emit("__settings__")
@@ -3331,11 +3983,33 @@ class MainWindow(QMainWindow):
         if action == "toggle_mod":
             self._mark_dirty("dashboard", "mods", "files", "logs", "tray")
             return
+        if action in {"install_mod", "remove_mod", "import_mod_from_github", "import_mod_from_paths", "import_mod_from_path"}:
+            self._mark_dirty("dashboard", "mods", "components", "files", "logs", "tray")
+            return
         if action in {"move_mod", "set_mod_emoji"}:
             self._mark_dirty("mods", "components", "files")
             return
         if action == "restart_zapret_if_running":
             self._mark_dirty("dashboard", "components", "tray")
+            return
+        if action in {"add_collection_values", "remove_collection_value", "reset_user_overrides"}:
+            files_payload = payload.get("files_payload") if isinstance(payload, dict) else None
+            if isinstance(files_payload, dict):
+                self._page_payload_cache["files"] = files_payload
+                if self.pages.currentIndex() == 3:
+                    self.refresh_files(files_payload)
+            self._mark_dirty("dashboard", "files", "logs", "tray")
+            self._ui_signals.component_action_done.emit("__files_collection__")
+            return
+        if action == "write_file_text":
+            saved_path = str(payload.get("path", "") or "")
+            if saved_path:
+                self.context.logging.log("info", "File saved", path=saved_path)
+            self._mark_dirty("files", "logs")
+            self._ui_signals.component_action_done.emit("__file_saved__")
+            return
+        if action == "rebuild_merge_runtime":
+            self._ui_signals.component_action_done.emit("__merge_rebuild__")
             return
         if action == "run_general_diagnostics":
             self._ui_signals.general_test_done.emit(payload.get("results", []))
@@ -3347,6 +4021,7 @@ class MainWindow(QMainWindow):
             self._show_settings_diagnostics_result(payload)
             return
         if action == "update_zapret_runtime":
+            self._close_component_update_dialog()
             status = str(payload.get("status", ""))
             if status == "up-to-date":
                 self._show_info("Zapret", self._t("Уже установлена последняя версия Zapret.", "The latest Zapret version is already installed."))
@@ -3354,6 +4029,17 @@ class MainWindow(QMainWindow):
                 self._show_info("Zapret", self._t("Zapret успешно обновлён.", "Zapret was updated successfully."))
             else:
                 self._show_error("Zapret", str(payload.get("error", self._t("Не удалось обновить Zapret.", "Failed to update Zapret."))))
+            self._mark_dirty("dashboard", "components", "files", "logs")
+            return
+        if action == "update_tg_ws_proxy_runtime":
+            self._close_component_update_dialog()
+            status = str(payload.get("status", ""))
+            if status == "up-to-date":
+                self._show_info("TG WS Proxy", self._t("Уже установлена последняя версия TG WS Proxy.", "The latest TG WS Proxy version is already installed."))
+            elif status == "updated":
+                self._show_info("TG WS Proxy", self._t("TG WS Proxy успешно обновлён.", "TG WS Proxy was updated successfully."))
+            else:
+                self._show_error("TG WS Proxy", str(payload.get("error", self._t("Не удалось обновить TG WS Proxy.", "Failed to update TG WS Proxy."))))
             self._mark_dirty("dashboard", "components", "files", "logs")
             return
 
@@ -3368,7 +4054,7 @@ class MainWindow(QMainWindow):
                 self._ui_signals.component_action_done.emit("__general__")
         if action == "apply_settings":
             self._ui_signals.component_action_done.emit("__settings__")
-        if action in {"toggle_component_enabled", "toggle_component_autostart"}:
+        if action in {"toggle_component_enabled", "toggle_component_autostart", "start_component", "stop_component"}:
             self._ui_signals.component_action_done.emit(action_id)
         if action in {"run_general_diagnostics", "run_general_diagnostic_single"}:
             self._general_test_running = False
@@ -3387,6 +4073,8 @@ class MainWindow(QMainWindow):
             self._settings_diag_dialog = None
             self._settings_diag_status_label = None
             self._settings_diag_progress_bar = None
+        if action in {"update_zapret_runtime", "update_tg_ws_proxy_runtime"}:
+            self._close_component_update_dialog()
         self._show_error("Zapret Hub", error)
 
     def _show_settings_diagnostics_result(self, payload: object) -> None:
@@ -3473,6 +4161,7 @@ class MainWindow(QMainWindow):
 
     def _apply_theme(self) -> None:
         theme = self.context.settings.get().theme
+        self._icon_cache.clear()
         chevron = str((self._icons_dir / "chevron_down.svg").resolve())
         check = str((self._icons_dir / "check.svg").resolve())
         self.setStyleSheet(build_stylesheet(theme, chevron_icon=chevron, check_icon=check))
@@ -3489,10 +4178,26 @@ class MainWindow(QMainWindow):
                 btn.set_nav_theme(theme)
         for overlay in self._scroll_fade_overlays:
             overlay.set_theme(theme)
+            if getattr(overlay, "_scrollable", None) is getattr(self, "_file_tag_scroll", None):
+                overlay.set_surface_color(_files_inner_surface_color(theme))
             overlay._sync_state()
+        if self._file_tag_scroll is not None and self._file_tag_canvas is not None:
+            tag_surface = _files_inner_surface_css(theme)
+            self._file_tag_scroll.setStyleSheet(
+                f"QScrollArea, QScrollArea > QWidget#qt_scrollarea_viewport {{ background: {tag_surface}; border: none; }}"
+            )
+            self._file_tag_canvas.setStyleSheet(f"background: {tag_surface}; border: none;")
         self._sync_nav_highlight(animated=False)
         self._apply_titlebar_icons(theme)
         self._apply_onboarding_style()
+        self._apply_file_search_style()
+        if self._file_search_toggle is not None:
+            self._file_search_toggle.setIcon(self._icon("search.svg"))
+        if hasattr(self, "mods_cards_layout"):
+            try:
+                self.refresh_mods()
+            except Exception:
+                pass
 
     def _apply_onboarding_style(self) -> None:
         if self._content_surface is None:
@@ -3567,11 +4272,55 @@ class MainWindow(QMainWindow):
                 f"background: transparent; border: none; padding: 6px 10px; color: {secondary_color};"
             )
 
-    def _register_scroll_fade(self, scrollable: QAbstractScrollArea) -> ScrollFadeOverlay:
+    def _register_scroll_fade(self, scrollable: QAbstractScrollArea, surface_color: QColor | None = None) -> ScrollFadeOverlay:
         overlay = ScrollFadeOverlay(scrollable)
         overlay.set_theme(self.context.settings.get().theme)
+        if surface_color is not None:
+            overlay.set_surface_color(surface_color)
         self._scroll_fade_overlays.append(overlay)
         return overlay
+
+    def _apply_file_search_style(self) -> None:
+        panel = self._file_search_panel
+        if panel is None:
+            return
+        theme = self.context.settings.get().theme
+        surface = _content_surface_color(theme)
+        bg = f"rgba({surface.red()}, {surface.green()}, {surface.blue()}, 0.94)"
+        if is_light_theme(theme):
+            border = "rgba(131, 159, 212, 0.95)"
+            red = "rgba(239, 68, 68, 0.95)"
+        else:
+            border = "rgba(90, 122, 186, 0.95)"
+            red = "rgba(251, 94, 94, 0.95)"
+        panel.setStyleSheet(
+            "QFrame#FileSearchPanel {"
+            "background: transparent;"
+            "border: 1px solid transparent;"
+            "border-radius: 18px;"
+            "}"
+            "QFrame#FileSearchPanel[expanded=\"true\"] {"
+            f"background: {bg};"
+            f"border: 1px solid {border};"
+            "border-radius: 18px;"
+            "}"
+            "QFrame#FileSearchPanel[expanded=\"true\"][searchState=\"empty\"] {"
+            f"border-color: {red};"
+            "}"
+            "QFrame#FileSearchPanel QLineEdit {"
+            "background: transparent;"
+            "border: none;"
+            "outline: none;"
+            "padding: 0px 2px;"
+            "margin: 0px;"
+            "}"
+            "QFrame#FileSearchPanel QToolButton {"
+            "background: transparent;"
+            "border: none;"
+            "padding: 0px;"
+            "margin: 0px;"
+            "}"
+        )
 
     def _register_smooth_scroll(self, scrollable: QAbstractScrollArea) -> None:
         self._smooth_scroll_helpers.append(SmoothScrollController(scrollable))
@@ -3820,7 +4569,7 @@ class MainWindow(QMainWindow):
         layout.setHorizontalSpacing(8)
         layout.setVerticalSpacing(8)
         current = ""
-        for item in self.context.mods.list_installed():
+        for item in self._mods_installed_cache.values():
             if item.id == mod_id:
                 current = self._resolve_mod_emoji(mod_id, getattr(item, "emoji", "") or "")
                 break
@@ -3857,12 +4606,7 @@ class MainWindow(QMainWindow):
 
     def _set_mod_emoji_immediate(self, mod_id: str, emoji: str, popup: QWidget | None = None) -> None:
         try:
-            self.context.mods.set_emoji(mod_id, emoji)
-            payload = {
-                "index": self.context.mods.fetch_index(),
-                "installed": list(self.context.mods.list_installed()),
-            }
-            self.refresh_mods(payload)
+            self._submit_backend_task("set_mod_emoji", {"mod_id": mod_id, "emoji": emoji}, action_id=f"mod-emoji:{mod_id}")
         except Exception as error:
             self._show_error(self._t("Модификации", "Mods"), str(error))
         finally:
@@ -3878,15 +4622,7 @@ class MainWindow(QMainWindow):
 
     def _move_mod(self, mod_id: str, direction: int) -> None:
         try:
-            installed = self.context.mods.move(mod_id, direction)
-            self._invalidate_general_options_cache()
-            payload = {
-                "index": self.context.mods.fetch_index(),
-                "installed": installed,
-            }
-            self.refresh_mods(payload)
-            self.refresh_components()
-            self._mark_dirty("files", "dashboard", "tray")
+            self._submit_backend_task("move_mod", {"mod_id": mod_id, "direction": direction}, action_id=f"mod-move:{mod_id}")
         except Exception as error:
             self._show_error(self._t("Модификации", "Mods"), str(error))
 
@@ -3909,12 +4645,12 @@ class MainWindow(QMainWindow):
 
     def _sorted_general_options(self) -> list[dict[str, str]]:
         if self._general_options_cache is None:
-            self._general_options_cache = self.context.processes.list_zapret_generals()
+            return []
         options = list(self._general_options_cache)
         favorites = {item for item in self._favorite_general_ids() if item}
         installed_order = {
             item.id: index
-            for index, item in enumerate(self.context.mods.list_installed())
+            for index, item in enumerate(self._mods_installed_cache.values())
             if getattr(item, "enabled", False)
         }
         return sorted(
@@ -4081,27 +4817,148 @@ class MainWindow(QMainWindow):
         if self._file_mode_stack is None:
             return
         if mode == "home":
+            self._cancel_file_tag_render()
             self._file_mode_stack.setCurrentIndex(0)
             self._set_files_mode_loading(False)
+            self._toggle_file_search(False)
+            if self._files_home_scroll is not None:
+                self._files_home_scroll.verticalScrollBar().setValue(0)
+            QTimer.singleShot(0, self._sync_files_home_layout)
             return
-        if mode == "advanced":
+        if mode in {"advanced", "hosts"}:
+            self._cancel_file_tag_render()
+            self._preferred_file_path = str(self.context.files.local_hosts_path()) if mode == "hosts" else ""
             self._file_mode_stack.setCurrentIndex(2)
+            self._use_file_search_variant("document")
+            self._file_search_mode = "document"
             self.file_path_label.setText(self._t("Загрузка файлов...", "Loading files..."))
             self.file_editor.clear()
             self.files_list.clear()
             self._set_files_mode_loading(True)
-            self._request_page_refresh("files")
+            QTimer.singleShot(0, lambda: self._request_page_refresh("files"))
             return
+        self._cancel_file_tag_render()
+        self._use_file_search_variant("tags")
+        self._file_search_mode = "tags"
         self._current_file_collection = mode
+        self._apply_file_collection_meta()
+        self._current_file_values_cache = []
+        self._render_file_tags([])
         self._file_mode_stack.setCurrentIndex(1)
         self._set_files_mode_loading(True)
-        self._refresh_file_collection_view_with_values([])
-        self._request_page_refresh("files")
+        if self._file_tag_scroll is not None:
+            self._file_tag_scroll.verticalScrollBar().setValue(0)
+        QTimer.singleShot(0, lambda: self._request_page_refresh("files"))
+
+    def _cancel_files_mode_transition(self) -> None:
+        if self._files_mode_transition_out is not None:
+            try:
+                self._files_mode_transition_out.stop()
+            except Exception:
+                pass
+        if self._files_mode_transition_in is not None:
+            try:
+                self._files_mode_transition_in.stop()
+            except Exception:
+                pass
+        self._files_mode_transition_out = None
+        self._files_mode_transition_in = None
+        self._files_mode_transition_running = False
+        if self._files_mode_opacity_effect is not None:
+            self._files_mode_opacity_effect.setOpacity(1.0)
+
+    def _switch_files_mode_index(
+        self,
+        index: int,
+        *,
+        before: callable | None = None,
+        after: callable | None = None,
+    ) -> None:
+        stack = self._file_mode_stack
+        if stack is None:
+            return
+        if before is not None:
+            before()
+        if stack.currentIndex() != index:
+            stack.setCurrentIndex(index)
+        if index == 1:
+            self._refresh_file_collection_view_with_values(self._current_file_values_cache)
+        if after is not None:
+            QTimer.singleShot(0, after)
+        if self._file_search_shell is not None:
+            self._file_search_shell.raise_()
 
     def _refresh_file_collection_view(self) -> None:
         self._refresh_file_collection_view_with_values(self._current_file_values_cache)
 
-    def _refresh_file_collection_view_with_values(self, values: list[str] | None) -> None:
+    def _sync_files_home_layout(self) -> None:
+        if self._files_home_scroll is None:
+            return
+        host = self._files_home_host if hasattr(self, "_files_home_host") else self._files_home_scroll.widget()
+        viewport = self._files_home_scroll.viewport()
+        if host is None or viewport is None:
+            return
+        viewport_width = viewport.width()
+        if viewport_width <= 0:
+            return
+        target_host_width = max(0, viewport_width)
+        host.setFixedWidth(target_host_width)
+        if host.layout() is not None:
+            host.layout().activate()
+        viewport.update()
+
+    def _prepare_files_page_geometry(self) -> None:
+        if self._file_mode_stack is not None and self._file_mode_stack.layout() is not None:
+            self._file_mode_stack.layout().activate()
+        page = self.pages.widget(3) if hasattr(self, "pages") else None
+        if isinstance(page, QWidget) and page.layout() is not None:
+            page.layout().activate()
+        self._sync_files_home_layout()
+        if self._file_tag_scroll is not None and self._file_mode_stack is not None and self._file_mode_stack.currentIndex() == 1:
+            self._sync_file_tag_canvas_geometry()
+        if self._file_search_shell is not None:
+            self._file_search_shell.raise_()
+
+    def _build_components_payload_sync(self) -> dict[str, object]:
+        try:
+            if self._component_defs_cache or self._component_states_cache:
+                return {
+                    "components": [asdict(item) for item in self._component_defs_cache.values()],
+                    "states": [asdict(item) for item in self._component_states_cache.values()],
+                }
+            return {
+                "components": [asdict(item) for item in self.context.processes.list_components()],
+                "states": [asdict(item) for item in self.context.processes.list_states()],
+            }
+        except Exception as error:
+            self.context.logging.log("error", "Synchronous components payload build failed", error=str(error))
+            return {}
+
+    def _build_components_cached_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"components": [], "states": []}
+        if self._component_defs_cache:
+            payload["components"] = [asdict(item) for item in self._component_defs_cache.values()]
+        if self._component_states_cache:
+            payload["states"] = [asdict(item) for item in self._component_states_cache.values()]
+        return payload
+
+    def _build_files_payload_sync(self, mode_index: int, collection_id: str) -> dict[str, object]:
+        return {
+            "mode_index": mode_index,
+            "collection_id": collection_id,
+            "records": self.context.files.list_files() if mode_index == 2 else None,
+            "collection_values": self.context.files.read_collection(collection_id) if mode_index == 1 else None,
+        }
+
+    def _refresh_file_collection_view_with_values(self, values: list[str] | None, *, finish_loading: bool = False) -> None:
+        self._apply_file_collection_meta()
+        if self._file_tag_input is not None:
+            self._file_tag_input.clear()
+        self._render_file_tags(values, finish_loading=finish_loading)
+        if self._file_search_shell is not None:
+            self._file_search_shell.raise_()
+
+    def _apply_file_collection_meta(self) -> None:
         titles = {
             "domains": (
                 self._t("Домены", "Domains"),
@@ -4144,36 +5001,129 @@ class MainWindow(QMainWindow):
             elif self._current_file_collection in {"all_ips", "ips"}:
                 placeholder = self._t("Введите IP или подсеть и нажмите Enter", "Type an IP or subnet and press Enter")
             self._file_tag_input.setPlaceholderText(placeholder)
-            self._file_tag_input.clear()
-        self._render_file_tags(values)
 
-    def _render_file_tags(self, values: list[str] | None = None) -> None:
+    def _cancel_file_tag_render(self) -> None:
+        self._file_tag_render_generation += 1
+        try:
+            self._file_tag_render_timer.stop()
+        except Exception:
+            pass
+        self._file_tag_render_values = []
+        self._file_tag_render_index = 0
+        self._file_tag_render_finish_loading = False
+
+    def _clear_file_tag_widgets(self) -> None:
         if self._file_tag_flow is None:
             return
         while self._file_tag_flow.count():
             item = self._file_tag_flow.takeAt(0)
             widget = item.widget() if item is not None else None
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
+
+    def _create_file_tag_chip(self, value: str) -> QFrame:
+        chip = QFrame()
+        chip.setProperty("class", "modMeta")
+        chip.setProperty("tagValue", value)
+        chip.setProperty("searchState", "idle")
+        chip.setMinimumHeight(42)
+        chip.setStyleSheet(
+            "QFrame { border-radius: 14px; border: 1px solid rgba(79, 96, 128, 0.24); background: rgba(79, 96, 128, 0.12); }"
+            "QFrame[searchState=\"match\"] { border-color: rgba(126, 164, 255, 0.62); background: rgba(126, 164, 255, 0.08); }"
+            "QFrame[searchState=\"active\"] { border-color: rgba(88, 101, 242, 0.95); background: rgba(88, 101, 242, 0.18); }"
+        )
+        chip_layout = QHBoxLayout(chip)
+        chip_layout.setContentsMargins(12, 6, 8, 6)
+        chip_layout.setSpacing(8)
+        label = QLabel(value)
+        label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        label.setStyleSheet("background: transparent; border: none; padding: 0px; margin: 0px;")
+        chip_layout.addWidget(label)
+        if not self.context.files.is_managed_collection_value(self._current_file_collection, value):
+            remove_btn = QToolButton()
+            remove_btn.setProperty("class", "action")
+            remove_btn.setText("×")
+            remove_btn.setFixedSize(18, 18)
+            remove_btn.setProperty("hoverRadius", 9)
+            remove_btn.setStyleSheet(
+                "QToolButton { background: transparent; border: none; padding: 0px; margin: 0px; font-size: 14px; font-weight: 600; }"
+            )
+            remove_btn.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
+            remove_btn.clicked.connect(lambda _=False, item=value: self._remove_file_tag(item))
+            self._attach_button_animations(remove_btn)
+            chip_layout.addWidget(remove_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        return chip
+
+    def _render_file_tags(self, values: list[str] | None = None, *, finish_loading: bool = False) -> None:
+        if self._file_tag_flow is None:
+            return
         resolved_values = list(values if values is not None else self._current_file_values_cache)
+        if (
+            resolved_values == self._current_file_values_cache
+            and self._file_tag_flow.count() == len(resolved_values)
+            and len(resolved_values) > 0
+        ):
+            if self._file_search_mode == "tags" and self._file_search_expanded and self._file_search_input is not None and self._file_search_input.text().strip():
+                self._refresh_file_search_matches()
+            if finish_loading:
+                self._set_files_mode_loading(False)
+            return
+        self._cancel_file_tag_render()
+        self._clear_file_tag_widgets()
         self._current_file_values_cache = resolved_values
-        for value in resolved_values:
-            chip = QFrame()
-            chip.setProperty("class", "modMeta")
-            chip_layout = QHBoxLayout(chip)
-            chip_layout.setContentsMargins(10, 6, 8, 6)
-            chip_layout.setSpacing(8)
-            label = QLabel(value)
-            chip_layout.addWidget(label)
-            if not self.context.files.is_managed_collection_value(self._current_file_collection, value):
-                remove_btn = QToolButton()
-                remove_btn.setProperty("class", "action")
-                remove_btn.setText("×")
-                remove_btn.clicked.connect(lambda _=False, item=value: self._remove_file_tag(item))
-                chip_layout.addWidget(remove_btn)
-            self._file_tag_flow.addWidget(chip)
-        if self._file_tag_canvas is not None:
-            self._file_tag_canvas.adjustSize()
+        self._file_tag_render_values = list(resolved_values)
+        self._file_tag_render_index = 0
+        self._file_tag_render_finish_loading = finish_loading
+        if not self._file_tag_render_values:
+            if finish_loading:
+                self._set_files_mode_loading(False)
+            self._sync_file_tag_canvas_geometry()
+            if self._file_search_mode == "tags" and self._file_search_expanded and self._file_search_input is not None and self._file_search_input.text().strip():
+                self._refresh_file_search_matches()
+            return
+        self._file_tag_render_timer.start(0)
+
+    def _render_file_tags_chunk(self) -> None:
+        if self._file_tag_flow is None or self._file_tag_canvas is None:
+            return
+        render_generation = self._file_tag_render_generation
+        values = self._file_tag_render_values
+        if not values:
+            return
+        chunk_size = 40
+        start = self._file_tag_render_index
+        end = min(start + chunk_size, len(values))
+        for value in values[start:end]:
+            self._file_tag_flow.addWidget(self._create_file_tag_chip(value))
+        self._file_tag_render_index = end
+        self._sync_file_tag_canvas_geometry()
+        self._file_tag_canvas.update()
+        if self._file_tag_scroll is not None:
+            self._file_tag_scroll.viewport().update()
+        if end < len(values):
+            if render_generation == self._file_tag_render_generation:
+                self._file_tag_render_timer.start(0)
+            return
+        self._file_tag_render_values = []
+        self._file_tag_render_index = 0
+        finish_loading = self._file_tag_render_finish_loading
+        self._file_tag_render_finish_loading = False
+        if finish_loading:
+            self._set_files_mode_loading(False)
+        if self._file_search_mode == "tags" and self._file_search_expanded and self._file_search_input is not None and self._file_search_input.text().strip():
+            self._refresh_file_search_matches()
+
+    def _sync_file_tag_canvas_geometry(self) -> None:
+        if self._file_tag_scroll is None or self._file_tag_canvas is None or self._file_tag_flow is None:
+            return
+        self._file_tag_canvas.adjustSize()
+        target_width = max(0, self._file_tag_scroll.viewport().width())
+        if target_width > 0 and self._file_tag_canvas.width() != target_width:
+            self._file_tag_canvas.resize(target_width, self._file_tag_canvas.sizeHint().height())
+        self._file_tag_canvas.setMinimumHeight(self._file_tag_canvas.sizeHint().height())
+        self._file_tag_scroll.viewport().update()
 
     def _commit_tag_input(self) -> None:
         if self._file_tag_input is None:
@@ -4181,15 +5131,25 @@ class MainWindow(QMainWindow):
         raw = self._file_tag_input.text().strip()
         if not raw:
             return
-        values = self.context.files.add_collection_values(self._current_file_collection, raw)
         self._file_tag_input.clear()
-        self._render_file_tags(values)
-        self._restart_zapret_if_running()
+        self._submit_backend_task(
+            "add_collection_values",
+            {
+                "collection_id": self._current_file_collection,
+                "raw": raw,
+            },
+            action_id="__files_collection__",
+        )
 
     def _remove_file_tag(self, value: str) -> None:
-        values = self.context.files.remove_collection_value(self._current_file_collection, value)
-        self._render_file_tags(values)
-        self._restart_zapret_if_running()
+        self._submit_backend_task(
+            "remove_collection_value",
+            {
+                "collection_id": self._current_file_collection,
+                "value": value,
+            },
+            action_id="__files_collection__",
+        )
 
     def _reset_all_file_overrides(self) -> None:
         confirmed = self._ask_yes_no(
@@ -4201,10 +5161,12 @@ class MainWindow(QMainWindow):
         )
         if not confirmed:
             return
-        self.context.files.reset_user_overrides()
         self._current_file_values_cache = []
-        self._request_page_refresh("files")
-        self._restart_zapret_if_running()
+        self._submit_backend_task(
+            "reset_user_overrides",
+            {"collection_id": self._current_file_collection},
+            action_id="__files_collection__",
+        )
 
     def _restart_zapret_if_running(self) -> None:
         try:
@@ -4227,7 +5189,7 @@ class MainWindow(QMainWindow):
         states = self._component_states()
         active_ids = self._master_active_components()
         running_ids = {cid for cid in active_ids if states.get(cid) and states[cid].status == "running"}
-        self._loading_action = "disconnect" if active_ids and running_ids == set(active_ids) else "connect"
+        self._loading_action = "disconnect" if running_ids else "connect"
         self._toggle_in_progress = True
         self.power_button.setEnabled(False)
         if isinstance(self.power_button, AnimatedPowerButton):
@@ -4246,13 +5208,12 @@ class MainWindow(QMainWindow):
             if not active_ids:
                 return
             running_ids = {cid for cid in active_ids if states.get(cid) and states[cid].status == "running"}
-            if running_ids == set(active_ids):
-                for cid in active_ids:
+            if running_ids:
+                for cid in list(running_ids):
                     self.context.processes.stop_component(cid)
             else:
                 for cid in active_ids:
-                    if cid not in running_ids:
-                        self.context.processes.start_component(cid)
+                    self.context.processes.start_component(cid)
         finally:
             self._ui_signals.toggle_done.emit()
 
@@ -4290,14 +5251,12 @@ class MainWindow(QMainWindow):
     def _start_selected_component(self) -> None:
         component_id = self._selected_component_id()
         if component_id:
-            self.context.processes.start_component(component_id)
-            self.refresh_all()
+            self._submit_backend_task("start_component", {"component_id": component_id}, action_id=component_id)
 
     def _stop_selected_component(self) -> None:
         component_id = self._selected_component_id()
         if component_id:
-            self.context.processes.stop_component(component_id)
-            self.refresh_all()
+            self._submit_backend_task("stop_component", {"component_id": component_id}, action_id=component_id)
 
     def _toggle_selected_component_enabled(self) -> None:
         component_id = self._selected_component_id()
@@ -4321,15 +5280,13 @@ class MainWindow(QMainWindow):
     def _install_selected_mod(self) -> None:
         mod_id = self._selected_mod_id()
         if mod_id:
-            self.context.mods.install(mod_id)
-            self._invalidate_general_options_cache()
-            self.refresh_all()
+            self._submit_backend_task("install_mod", {"mod_id": mod_id}, action_id=f"mod-install:{mod_id}")
 
     def _toggle_selected_mod(self) -> None:
         mod_id = self._selected_mod_id()
         if not mod_id:
             return
-        installed = {item.id: item for item in self.context.mods.list_installed()}
+        installed = dict(self._mods_installed_cache)
         if mod_id not in installed:
             self._show_info(self._t("Модификация", "Mod"), self._t("Сначала установите модификацию, затем включайте её.", "Install selected mod before enabling it."))
             return
@@ -4338,9 +5295,7 @@ class MainWindow(QMainWindow):
     def _remove_selected_mod(self) -> None:
         mod_id = self._selected_mod_id()
         if mod_id:
-            self.context.mods.remove(mod_id)
-            self._invalidate_general_options_cache()
-            self.refresh_all()
+            self._submit_backend_task("remove_mod", {"mod_id": mod_id}, action_id=f"mod-remove:{mod_id}")
 
     def _import_mod_any(self) -> None:
         previous_selected_general = str(self.context.settings.get().selected_zapret_general or "")
@@ -4422,11 +5377,14 @@ class MainWindow(QMainWindow):
             if not repo_url:
                 return
             try:
-                self.context.mods.import_from_github(repo_url)
-                if previous_selected_general:
-                    self.context.settings.update(selected_zapret_general=previous_selected_general)
-                self._invalidate_general_options_cache()
-                self.refresh_all()
+                self._submit_backend_task(
+                    "import_mod_from_github",
+                    {
+                        "repo_url": repo_url,
+                        "previous_selected_general": previous_selected_general,
+                    },
+                    action_id="__mods_import__",
+                )
             except Exception as error:
                 self._show_error(self._t("Модификации", "Mods"), f"{self._t('Не удалось импортировать репозиторий', 'Failed to import repository')}:\n{error}")
             return
@@ -4434,11 +5392,14 @@ class MainWindow(QMainWindow):
         if not paths:
             return
         try:
-            self.context.mods.import_from_paths(paths)
-            if previous_selected_general:
-                self.context.settings.update(selected_zapret_general=previous_selected_general)
-            self._invalidate_general_options_cache()
-            self.refresh_all()
+            self._submit_backend_task(
+                "import_mod_from_paths",
+                {
+                    "paths": paths,
+                    "previous_selected_general": previous_selected_general,
+                },
+                action_id="__mods_import__",
+            )
         except Exception as error:
             self._show_error(self._t("Модификации", "Mods"), f"{self._t('Не удалось импортировать модификацию', 'Failed to import modification')}:\n{error}")
 
@@ -4447,9 +5408,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.context.mods.import_from_path(path)
-            self._invalidate_general_options_cache()
-            self.refresh_all()
+            self._submit_backend_task("import_mod_from_path", {"path": path}, action_id="__mods_import__")
         except Exception as error:
             self._show_error(self._t("Модификации", "Mods"), f"{self._t('Не удалось импортировать папку', 'Failed to import folder')}:\n{error}")
 
@@ -4458,20 +5417,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.context.mods.import_from_path(path)
-            self._invalidate_general_options_cache()
-            self.refresh_all()
+            self._submit_backend_task("import_mod_from_path", {"path": path}, action_id="__mods_import__")
         except Exception as error:
             self._show_error(self._t("Модификации", "Mods"), f"{self._t('Не удалось импортировать архив', 'Failed to import archive')}:\n{error}")
 
     def _rebuild_runtime(self) -> None:
-        def _worker() -> None:
-            try:
-                self.context.merge.rebuild()
-            finally:
-                self._ui_signals.component_action_done.emit("__merge_rebuild__")
-
-        threading.Thread(target=_worker, daemon=True).start()
+        self._submit_backend_task("rebuild_merge_runtime", action_id="__merge_rebuild__")
 
     def _check_updates_popup(self) -> None:
         self._start_update_check(manual=True)
@@ -4487,6 +5438,8 @@ class MainWindow(QMainWindow):
         if self._update_check_in_progress:
             return
         self._update_check_in_progress = True
+        if manual:
+            self._show_update_check_dialog()
         thread = threading.Thread(target=self._run_update_check_worker, args=(manual,), daemon=True)
         thread.start()
 
@@ -4562,6 +5515,7 @@ class MainWindow(QMainWindow):
 
     def _on_update_check_done(self, release: object, manual: bool) -> None:
         self._update_check_in_progress = False
+        self._close_update_check_dialog()
         if not isinstance(release, dict):
             if manual:
                 self._show_error(self._t("Обновления", "Updates"), self._t("Не удалось проверить обновления.", "Failed to check for updates."))
@@ -4596,8 +5550,80 @@ class MainWindow(QMainWindow):
                     str(release.get("error", self._t("Не удалось проверить обновления.", "Failed to check for updates."))),
                 )
 
+    def _show_update_check_dialog(self) -> None:
+        if self._update_check_dialog is not None:
+            try:
+                self._update_check_dialog.prepare_and_center()
+                self._update_check_dialog.show()
+                self._update_check_dialog.raise_()
+                self._update_check_dialog.activateWindow()
+            except Exception:
+                pass
+            return
+        dialog = AppDialog(self, self.context, self._t("Обновления", "Updates"))
+        label = QLabel(self._t("Проверка обновлений...", "Checking for updates..."))
+        label.setWordWrap(True)
+        dialog.body_layout.addWidget(label)
+        dialog.prepare_and_center()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._update_check_dialog = dialog
+        self._update_check_label = label
+
+    def _close_update_check_dialog(self) -> None:
+        dialog = self._update_check_dialog
+        self._update_check_dialog = None
+        self._update_check_label = None
+        if dialog is None:
+            return
+        try:
+            dialog.close()
+            dialog.deleteLater()
+        except Exception:
+            pass
+
+    def _show_component_update_dialog(self, component_name: str) -> None:
+        text = self._t(
+            f"Проверка обновлений {component_name}...",
+            f"Checking {component_name} updates...",
+        )
+        if self._component_update_dialog is not None and self._component_update_label is not None:
+            try:
+                self._component_update_label.setText(text)
+                self._component_update_dialog.prepare_and_center()
+                self._component_update_dialog.show()
+                self._component_update_dialog.raise_()
+                self._component_update_dialog.activateWindow()
+            except Exception:
+                pass
+            return
+        dialog = AppDialog(self, self.context, self._t("Обновления", "Updates"))
+        label = QLabel(text)
+        label.setWordWrap(True)
+        dialog.body_layout.addWidget(label)
+        dialog.prepare_and_center()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._component_update_dialog = dialog
+        self._component_update_label = label
+
+    def _close_component_update_dialog(self) -> None:
+        dialog = self._component_update_dialog
+        self._component_update_dialog = None
+        self._component_update_label = None
+        if dialog is None:
+            return
+        try:
+            dialog.close()
+            dialog.deleteLater()
+        except Exception:
+            pass
+
     def _show_update_prompt(self, release: dict[str, str]) -> None:
         dialog = AppDialog(self, self.context, self._t("Доступно обновление", "Update available"))
+        dialog.setMinimumWidth(760)
         message = QLabel(
             self._t(
                 f"Вышла новая версия Zapret Hub.\n\nТекущая версия: {release.get('current_version', '')}\nНовая версия: {release.get('latest_version', '')}",
@@ -4607,15 +5633,66 @@ class MainWindow(QMainWindow):
         message.setWordWrap(True)
         dialog.body_layout.addWidget(message)
 
-        body = str(release.get("body", "")).strip()
-        if body:
-            notes = QTextEdit()
-            notes.setReadOnly(True)
-            notes.setMinimumHeight(120)
-            notes.setMaximumHeight(220)
-            notes.setPlainText(body)
-            notes.setProperty("class", "muted")
-            dialog.body_layout.addWidget(notes)
+        releases = release.get("releases", [])
+        release_list: list[dict[str, object]] = list(releases) if isinstance(releases, list) else []
+        if not release_list:
+            release_list = [
+                {
+                    "version": str(release.get("latest_version", "")).strip(),
+                    "body": str(release.get("body", "")).strip(),
+                    "html_url": str(release.get("html_url", "")).strip(),
+                    "is_latest": True,
+                }
+            ]
+
+        body_shell = QWidget()
+        body_layout = QHBoxLayout(body_shell)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(10)
+
+        versions_list = QListWidget()
+        versions_list.setMaximumWidth(170)
+        versions_list.setMinimumHeight(160)
+        versions_list.setSpacing(6)
+        body_layout.addWidget(versions_list, 0)
+
+        notes = QTextEdit()
+        notes.setReadOnly(True)
+        notes.setMinimumHeight(160)
+        notes.setMaximumHeight(260)
+        notes.setProperty("class", "muted")
+        body_layout.addWidget(notes, 1)
+
+        for item in release_list:
+            version = str(item.get("version", "")).strip()
+            title = version
+            if bool(item.get("is_latest")):
+                title = f"{version} · {self._t('последняя', 'latest')}"
+            row_item = QListWidgetItem(title)
+            row_item.setData(Qt.ItemDataRole.UserRole, dict(item))
+            row_item.setSizeHint(QSize(140, 38))
+            versions_list.addItem(row_item)
+
+        def _select_release(item: QListWidgetItem | None) -> None:
+            if item is None:
+                notes.clear()
+                return
+            payload = item.data(Qt.ItemDataRole.UserRole) or {}
+            version = str(payload.get("version", "")).strip()
+            body = str(payload.get("body", "")).strip()
+            html_url = str(payload.get("html_url", "")).strip()
+            parts = [f"v{version}"] if version else []
+            if html_url:
+                parts.append(html_url)
+            if body:
+                parts.append("")
+                parts.append(body)
+            notes.setPlainText("\n".join(parts).strip())
+
+        versions_list.currentItemChanged.connect(_select_release)
+        if versions_list.count() > 0:
+            versions_list.setCurrentRow(0)
+        dialog.body_layout.addWidget(body_shell)
 
         next_launch_checkbox = QCheckBox(self._t("Обновить при следующем запуске", "Update on next launch"))
         next_launch_checkbox.setChecked(bool(self.context.settings.get().apply_update_on_next_launch))
@@ -4627,6 +5704,9 @@ class MainWindow(QMainWindow):
         link_btn = QPushButton(self._t("Открыть ссылку", "Open link"))
         update_btn = QPushButton(self._t("Обновить сейчас", "Update now"))
         update_btn.setProperty("class", "primary")
+        self._attach_button_animations(close_btn)
+        self._attach_button_animations(link_btn)
+        self._attach_button_animations(update_btn)
         def _sync_update_button() -> None:
             update_btn.setText(self._t("Применить", "Apply") if next_launch_checkbox.isChecked() else self._t("Обновить сейчас", "Update now"))
         _sync_update_button()
@@ -4723,6 +5803,8 @@ class MainWindow(QMainWindow):
         item = self.files_list.currentItem()
         label_text = item.text().split("\n")[0] if item else full_path
         self.file_path_label.setText(label_text)
+        if self.rename_file_btn is not None:
+            self.rename_file_btn.setEnabled(Path(full_path) != self.context.files.local_hosts_path())
         self._request_file_content(full_path)
 
     def _save_current_file(self) -> None:
@@ -4730,9 +5812,358 @@ class MainWindow(QMainWindow):
         if not full_path:
             self._show_info(self._t("Файлы", "Files"), self._t("Выберите файл перед сохранением.", "Select a file before saving."))
             return
-        self.context.files.write_text(full_path, self.file_editor.toPlainText())
-        self.context.logging.log("info", "File saved", path=full_path)
-        self.refresh_logs()
+        self._submit_backend_task(
+            "write_file_text",
+            {"path": full_path, "content": self.file_editor.toPlainText()},
+            action_id="__file_saved__",
+        )
+
+    def _toggle_file_search(self, expanded: bool | None = None) -> None:
+        panel = self._file_search_panel
+        field = self._file_search_input
+        if panel is None or field is None:
+            return
+        if self._file_search_shell is not None:
+            self._file_search_shell.raise_()
+        target_expanded = (not self._file_search_expanded) if expanded is None else bool(expanded)
+        self._file_search_expanded = target_expanded
+        panel.setProperty("expanded", target_expanded)
+        panel.style().unpolish(panel)
+        panel.style().polish(panel)
+        if self._file_search_anim is not None:
+            self._file_search_anim.stop()
+            self._file_search_anim = None
+        if target_expanded:
+            field.setVisible(True)
+            target_width = self._current_file_search_expanded_width()
+        else:
+            self._clear_file_search(reset_text=True)
+            target_width = 44
+        group = QParallelAnimationGroup(self)
+        for prop_name in (b"minimumWidth", b"maximumWidth"):
+            anim = QPropertyAnimation(panel, prop_name, self)
+            anim.setDuration(180 if target_expanded else 120)
+            current = panel.minimumWidth() if prop_name == b"minimumWidth" else panel.maximumWidth()
+            anim.setStartValue(current)
+            anim.setEndValue(target_width)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic if target_expanded else QEasingCurve.Type.InCubic)
+            group.addAnimation(anim)
+
+        def _after() -> None:
+            if not target_expanded:
+                field.setVisible(False)
+                if self._file_search_prev_btn is not None:
+                    self._file_search_prev_btn.setVisible(False)
+                if self._file_search_next_btn is not None:
+                    self._file_search_next_btn.setVisible(False)
+                app = QCoreApplication.instance()
+                if app is not None:
+                    try:
+                        app.removeEventFilter(self)
+                    except Exception:
+                        pass
+            else:
+                app = QCoreApplication.instance()
+                if app is not None:
+                    try:
+                        app.installEventFilter(self)
+                    except Exception:
+                        pass
+                field.setFocus(Qt.FocusReason.MouseFocusReason)
+                field.selectAll()
+                self._update_file_search_controls()
+                if field.text().strip():
+                    self._refresh_file_search_matches()
+
+        group.finished.connect(_after)
+        group.start()
+        self._file_search_anim = group
+
+    def _register_file_search_variant(
+        self,
+        name: str,
+        *,
+        shell: QWidget,
+        panel: QFrame,
+        toggle: QToolButton,
+        field: QLineEdit,
+        prev_btn: QToolButton,
+        next_btn: QToolButton,
+    ) -> None:
+        self._file_search_variants[name] = {
+            "shell": shell,
+            "panel": panel,
+            "toggle": toggle,
+            "field": field,
+            "prev": prev_btn,
+            "next": next_btn,
+        }
+
+    def _use_file_search_variant(self, name: str) -> None:
+        variant = self._file_search_variants.get(name)
+        if variant is None:
+            return
+        self._file_search_shell = variant["shell"]
+        self._file_search_panel = variant["panel"]  # type: ignore[assignment]
+        self._file_search_toggle = variant["toggle"]  # type: ignore[assignment]
+        self._file_search_input = variant["field"]  # type: ignore[assignment]
+        self._file_search_prev_btn = variant["prev"]  # type: ignore[assignment]
+        self._file_search_next_btn = variant["next"]  # type: ignore[assignment]
+        if self._file_search_panel is not None:
+            expanded = bool(self._file_search_expanded)
+            self._file_search_panel.setProperty("expanded", expanded)
+            expanded_width = self._current_file_search_expanded_width()
+            self._file_search_panel.setMinimumWidth(expanded_width if expanded else 44)
+            self._file_search_panel.setMaximumWidth(expanded_width if expanded else 44)
+        if self._file_search_input is not None:
+            self._file_search_input.setVisible(bool(self._file_search_expanded))
+        if self._file_search_shell is not None:
+            self._file_search_shell.raise_()
+        self._apply_file_search_style()
+        self._update_file_search_controls()
+
+    def _build_file_search_variant(self, parent: QWidget, *, placeholder: str) -> tuple[QWidget, QFrame, QToolButton, QLineEdit, QToolButton, QToolButton]:
+        search_shell = QWidget(parent)
+        search_shell.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        search_shell.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        search_shell.setAutoFillBackground(False)
+        search_shell.setStyleSheet("background: transparent;")
+        search_layout = QHBoxLayout(search_shell)
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_layout.setSpacing(8)
+        search_layout.addStretch(1)
+
+        search_panel = QFrame(search_shell)
+        search_panel.setObjectName("FileSearchPanel")
+        search_panel.setProperty("expanded", False)
+        search_panel.setProperty("searchState", "idle")
+        search_panel.setMaximumWidth(44)
+        search_panel.setMinimumWidth(44)
+        search_panel.setMinimumHeight(38)
+        search_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        search_panel_layout = QHBoxLayout(search_panel)
+        search_panel_layout.setContentsMargins(8, 4, 4, 4)
+        search_panel_layout.setSpacing(4)
+
+        search_input = QLineEdit()
+        search_input.setPlaceholderText(placeholder)
+        search_input.setFixedWidth(156)
+        search_input.setVisible(False)
+        search_input.installEventFilter(self)
+        search_input.textChanged.connect(self._on_file_search_text_changed)
+        search_panel_layout.addWidget(search_input)
+
+        search_prev_btn = QToolButton()
+        search_prev_btn.setProperty("class", "action")
+        search_prev_btn.setArrowType(Qt.ArrowType.UpArrow)
+        search_prev_btn.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
+        search_prev_btn.setVisible(False)
+        search_prev_btn.clicked.connect(lambda: self._jump_file_search_match(-1))
+        search_panel_layout.addWidget(search_prev_btn)
+
+        search_next_btn = QToolButton()
+        search_next_btn.setProperty("class", "action")
+        search_next_btn.setArrowType(Qt.ArrowType.DownArrow)
+        search_next_btn.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
+        search_next_btn.setVisible(False)
+        search_next_btn.clicked.connect(lambda: self._jump_file_search_match(1))
+        search_panel_layout.addWidget(search_next_btn)
+
+        search_toggle = QToolButton()
+        search_toggle.setProperty("class", "action")
+        search_toggle.setIcon(self._icon("search.svg"))
+        search_toggle.setIconSize(QSize(16, 16))
+        search_toggle.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
+        search_toggle.clicked.connect(lambda _=False: self._toggle_file_search())
+        search_panel_layout.addWidget(search_toggle)
+
+        search_layout.addWidget(search_panel, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        self._attach_button_animations(search_prev_btn)
+        self._attach_button_animations(search_next_btn)
+        self._attach_button_animations(search_toggle)
+        return search_shell, search_panel, search_toggle, search_input, search_prev_btn, search_next_btn
+
+    def _clear_file_search(self, *, reset_text: bool) -> None:
+        if reset_text and self._file_search_input is not None:
+            self._file_search_input.blockSignals(True)
+            self._file_search_input.clear()
+            self._file_search_input.blockSignals(False)
+        self._file_search_matches = []
+        self._file_search_index = -1
+        self._file_tag_search_matches = []
+        self._file_tag_search_index = -1
+        self.file_editor.setExtraSelections([])
+        self._apply_tag_search_highlights()
+        if self._file_search_panel is not None:
+            self._file_search_panel.setProperty("searchState", "idle")
+            self._file_search_panel.style().unpolish(self._file_search_panel)
+            self._file_search_panel.style().polish(self._file_search_panel)
+        self._update_file_search_controls()
+
+    def _on_file_search_text_changed(self, _text: str) -> None:
+        self._refresh_file_search_matches()
+
+    def _on_file_editor_text_changed(self) -> None:
+        if self._file_search_expanded and self._file_search_input is not None and self._file_search_input.text().strip():
+            self._refresh_file_search_matches()
+
+    def _refresh_file_search_matches(self) -> None:
+        if self._file_search_input is None:
+            return
+        query = self._file_search_input.text().strip()
+        if not query:
+            self._clear_file_search(reset_text=False)
+            return
+        if self._file_search_mode == "tags":
+            self._refresh_tag_search_matches(query)
+            return
+        self._file_search_matches = []
+        document = self.file_editor.document()
+        cursor = QTextCursor(document)
+        while True:
+            cursor = document.find(query, cursor, QTextDocument.FindFlag(0))
+            if cursor.isNull():
+                break
+            self._file_search_matches.append((cursor.selectionStart(), cursor.selectionEnd()))
+        if not self._file_search_matches:
+            self.file_editor.setExtraSelections([])
+            self._file_search_index = -1
+            if self._file_search_panel is not None:
+                self._file_search_panel.setProperty("searchState", "empty")
+                self._file_search_panel.style().unpolish(self._file_search_panel)
+                self._file_search_panel.style().polish(self._file_search_panel)
+            self._update_file_search_controls()
+            return
+        if self._file_search_panel is not None:
+            self._file_search_panel.setProperty("searchState", "ok")
+            self._file_search_panel.style().unpolish(self._file_search_panel)
+            self._file_search_panel.style().polish(self._file_search_panel)
+        self._file_search_index = 0
+        self._apply_file_search_highlights()
+        self._focus_file_search_match(self._file_search_index)
+        self._update_file_search_controls()
+
+    def _refresh_tag_search_matches(self, query: str) -> None:
+        self._file_tag_search_matches = []
+        query_lower = query.lower()
+        if self._file_tag_flow is not None:
+            for idx in range(self._file_tag_flow.count()):
+                item = self._file_tag_flow.itemAt(idx)
+                widget = item.widget() if item is not None else None
+                if isinstance(widget, QFrame):
+                    value = str(widget.property("tagValue") or "")
+                    if query_lower in value.lower():
+                        self._file_tag_search_matches.append(widget)
+        if not self._file_tag_search_matches:
+            self._file_tag_search_index = -1
+            if self._file_search_panel is not None:
+                self._file_search_panel.setProperty("searchState", "empty")
+                self._file_search_panel.style().unpolish(self._file_search_panel)
+                self._file_search_panel.style().polish(self._file_search_panel)
+            self._apply_tag_search_highlights()
+            self._update_file_search_controls()
+            return
+        if self._file_search_panel is not None:
+            self._file_search_panel.setProperty("searchState", "ok")
+            self._file_search_panel.style().unpolish(self._file_search_panel)
+            self._file_search_panel.style().polish(self._file_search_panel)
+        self._file_tag_search_index = 0
+        self._apply_tag_search_highlights()
+        self._focus_tag_search_match(self._file_tag_search_index)
+        self._update_file_search_controls()
+
+    def _apply_file_search_highlights(self) -> None:
+        selections: list[QTextEdit.ExtraSelection] = []
+        for index, (start, end) in enumerate(self._file_search_matches):
+            cursor = self.file_editor.textCursor()
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = cursor
+            fmt = QTextCharFormat()
+            if index == self._file_search_index:
+                fmt.setBackground(QColor(88, 101, 242, 145))
+                fmt.setForeground(QColor("#ffffff"))
+            else:
+                fmt.setBackground(QColor(126, 164, 255, 72))
+            selection.format = fmt
+            selections.append(selection)
+        self.file_editor.setExtraSelections(selections)
+
+    def _apply_tag_search_highlights(self) -> None:
+        if self._file_tag_flow is None:
+            return
+        active_widget = None
+        if 0 <= self._file_tag_search_index < len(self._file_tag_search_matches):
+            active_widget = self._file_tag_search_matches[self._file_tag_search_index]
+        for idx in range(self._file_tag_flow.count()):
+            item = self._file_tag_flow.itemAt(idx)
+            widget = item.widget() if item is not None else None
+            if not isinstance(widget, QFrame):
+                continue
+            if widget is active_widget:
+                state = "active"
+            elif widget in self._file_tag_search_matches:
+                state = "match"
+            else:
+                state = "idle"
+            widget.setProperty("searchState", state)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
+
+    def _focus_file_search_match(self, index: int) -> None:
+        if index < 0 or index >= len(self._file_search_matches):
+            return
+        start, end = self._file_search_matches[index]
+        cursor = self.file_editor.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        self.file_editor.setTextCursor(cursor)
+        self.file_editor.ensureCursorVisible()
+
+    def _focus_tag_search_match(self, index: int) -> None:
+        if index < 0 or index >= len(self._file_tag_search_matches):
+            return
+        widget = self._file_tag_search_matches[index]
+        if self._file_tag_scroll is not None:
+            self._file_tag_scroll.ensureWidgetVisible(widget, 12, 12)
+
+    def _jump_file_search_match(self, step: int) -> None:
+        if self._file_search_mode == "tags":
+            if not self._file_tag_search_matches:
+                return
+            self._file_tag_search_index = (self._file_tag_search_index + step) % len(self._file_tag_search_matches)
+            self._apply_tag_search_highlights()
+            self._focus_tag_search_match(self._file_tag_search_index)
+            self._update_file_search_controls()
+            return
+        if not self._file_search_matches:
+            return
+        self._file_search_index = (self._file_search_index + step) % len(self._file_search_matches)
+        self._apply_file_search_highlights()
+        self._focus_file_search_match(self._file_search_index)
+        self._update_file_search_controls()
+
+    def _update_file_search_controls(self) -> None:
+        count = len(self._file_tag_search_matches) if self._file_search_mode == "tags" else len(self._file_search_matches)
+        multi = count > 1 and self._file_search_expanded
+        if self._file_search_prev_btn is not None:
+            self._file_search_prev_btn.setVisible(multi)
+            self._file_search_prev_btn.setEnabled(count > 1)
+        if self._file_search_next_btn is not None:
+            self._file_search_next_btn.setVisible(multi)
+            self._file_search_next_btn.setEnabled(count > 1)
+        if self._file_search_input is not None:
+            self._file_search_input.setFixedWidth(156 if not multi else 170)
+        if self._file_search_panel is not None and self._file_search_expanded:
+            width = self._current_file_search_expanded_width()
+            self._file_search_panel.setMinimumWidth(width)
+            self._file_search_panel.setMaximumWidth(width)
+
+    def _current_file_search_expanded_width(self) -> int:
+        count = len(self._file_tag_search_matches) if self._file_search_mode == "tags" else len(self._file_search_matches)
+        return 278 if count > 1 else 214
 
     def _rename_current_file(self) -> None:
         full_path = self._selected_file_path()
@@ -4771,9 +6202,14 @@ class MainWindow(QMainWindow):
         if self._refresh_scheduled:
             return
         self._refresh_scheduled = True
-        QTimer.singleShot(0, self._flush_dirty_refresh)
+        delay = 0 if not (self._page_transition_running or self._files_mode_transition_running) else 140
+        QTimer.singleShot(delay, self._flush_dirty_refresh)
 
     def _flush_dirty_refresh(self) -> None:
+        if self._page_transition_running or self._files_mode_transition_running:
+            self._refresh_scheduled = False
+            self._schedule_dirty_refresh()
+            return
         self._refresh_scheduled = False
         dirty = set(self._refresh_dirty_sections)
         self._refresh_dirty_sections.clear()
@@ -4824,10 +6260,9 @@ class MainWindow(QMainWindow):
             collection_id = self._current_file_collection
             cached = self._page_payload_cache.get(section)
             if isinstance(cached, dict):
-                cached_token = int(cached.get("_token", 0) or 0)
                 cached_mode = int(cached.get("mode_index", -1) or -1)
                 cached_collection = str(cached.get("collection_id", "") or "")
-                if cached_token == token and cached_mode == mode_index and cached_collection == collection_id:
+                if cached_mode == mode_index and cached_collection == collection_id:
                     self.refresh_files(cached)
             thread = threading.Thread(
                 target=self._collect_files_payload_worker,
@@ -4872,6 +6307,7 @@ class MainWindow(QMainWindow):
                 payload = {
                     "components": self.context.processes.list_components(),
                     "states": {item.component_id: item for item in self.context.processes.list_states()},
+                    "general_options": list(self.context.processes.list_zapret_generals()),
                 }
             elif section == "mods":
                 payload = {
@@ -4917,6 +6353,7 @@ class MainWindow(QMainWindow):
             if str(payload.get("path", "") or "") != self._pending_file_content_path:
                 return
             self.file_editor.setPlainText(str(payload.get("content", "") or ""))
+            self._refresh_file_search_matches()
             self._set_file_editor_loading(False)
             return
         self._page_refresh_in_progress.discard(section)
@@ -4927,11 +6364,18 @@ class MainWindow(QMainWindow):
             self._page_payload_cache[section] = payload
             if section == "components":
                 self._update_runtime_snapshot_from_payload(payload)
+                self._update_general_options_from_payload(payload)
+            elif section == "mods":
+                self._update_mods_cache_from_payload(payload)
         visible_page = self.pages.currentIndex() if hasattr(self, "pages") else 0
-        if section == "components" and visible_page == 1:
+        if section == "components":
+            self.context.logging.log("info", "components_payload_received", payload_type=type(payload).__name__)
             self.refresh_components(payload)
-        elif section == "mods" and visible_page == 2:
+            QTimer.singleShot(0, self._sync_component_card_layout)
+            self.context.logging.log("info", "components_render_done")
+        elif section == "mods":
             self.refresh_mods(payload)
+            QTimer.singleShot(0, self._sync_mod_card_layout)
         elif section == "files" and visible_page == 3:
             self.refresh_files(payload)
         elif section == "logs" and visible_page == 4:
@@ -4940,8 +6384,33 @@ class MainWindow(QMainWindow):
             self._hide_loading_overlay()
 
     def refresh_dashboard(self) -> None:
+        if self._page_transition_running and (
+            self.pages.currentIndex() == 0 or getattr(self, "_page_transition_target", -1) == 0
+        ):
+            self._refresh_dirty_sections.add("dashboard")
+            return
         settings = self.context.settings.get()
-        self._refresh_general_combo(settings.selected_zapret_general)
+        if not self._startup_snapshot_ready:
+            self.power_button.setProperty("state", "loading")
+            self._update_power_icon()
+            if isinstance(self.power_button, AnimatedPowerButton):
+                self.power_button.set_loading_state(True, animate=not self._page_transition_running)
+            if self.power_aura is not None:
+                self.power_aura.set_idle_pulse_enabled(False)
+            if self.power_caption_dots is not None:
+                self.power_caption_dots.setText("")
+                self.power_caption_dots.hide()
+            self._power_caption_base_text = self._t("ЗАГРУЗКА", "LOADING")
+            if self.power_caption_text is not None:
+                self.power_caption_text.setText(self._power_caption_base_text)
+            self._set_badge("app", self._t("Загрузка", "Loading"), "status_warn.svg")
+            self._set_badge("zapret", self._t("Загрузка", "Loading"), "status_warn.svg")
+            self._set_badge("tg", self._t("Загрузка", "Loading"), "status_warn.svg")
+            self._set_badge("mods", self._t("Загрузка", "Loading"), "status_mod.svg")
+            self._set_badge("theme", settings.theme.title(), self._theme_status_icon_name())
+            return
+        if self.general_combo.isVisible():
+            self._refresh_general_combo(settings.selected_zapret_general)
         states = self._component_states()
         components = self._component_defs()
         active_ids = self._master_active_components()
@@ -4954,7 +6423,8 @@ class MainWindow(QMainWindow):
         self.power_button.setProperty("state", "on" if fully_running else "off")
         self._update_power_icon()
         if isinstance(self.power_button, AnimatedPowerButton):
-            self.power_button.set_active_state(fully_running, animate=True)
+            animate_power = not self._page_transition_running
+            self.power_button.set_active_state(fully_running, animate=animate_power)
         if self.power_aura is not None:
             self.power_aura.set_idle_pulse_enabled(fully_running and not self._toggle_in_progress)
         if self.power_caption_dots is not None:
@@ -4980,13 +6450,6 @@ class MainWindow(QMainWindow):
         self._set_badge("tg", tg_text, tg_icon)
         self._set_badge("mods", f"{len(enabled_mods)} {self._t('Активно', 'Active')}", "status_mod.svg")
         self._set_badge("theme", settings.theme.title(), self._theme_status_icon_name())
-
-        try:
-            merge_state = self.context.merge.get_state()
-        except Exception:
-            merge_state = None
-        if merge_state is None and enabled_mods:
-            QTimer.singleShot(0, self._ensure_merge_runtime_ready)
 
     def _ensure_merge_runtime_ready(self) -> None:
         if self._merge_ensure_in_progress:
@@ -5235,6 +6698,14 @@ class MainWindow(QMainWindow):
 
         if action_id == "__merge_rebuild__":
             self._mark_dirty("dashboard", "mods", "files", "logs", "tray")
+            return
+
+        if action_id == "__files_collection__":
+            self._mark_dirty("dashboard", "files", "logs", "tray")
+            return
+
+        if action_id == "__file_saved__":
+            self._request_page_refresh("logs")
             return
 
         if action_id == "__general__":
@@ -5601,6 +7072,7 @@ class MainWindow(QMainWindow):
         row.addStretch(1)
         ok_btn = QPushButton(self._t("Ок", "OK"))
         ok_btn.setProperty("class", "primary")
+        self._attach_button_animations(ok_btn)
         ok_btn.clicked.connect(dialog.accept)
         row.addWidget(ok_btn)
         dialog.body_layout.addLayout(row)
@@ -5623,6 +7095,7 @@ class MainWindow(QMainWindow):
         row.addStretch(1)
         ok_btn = QPushButton(self._t("Ок", "OK"))
         ok_btn.setProperty("class", "primary")
+        self._attach_button_animations(ok_btn)
         ok_btn.clicked.connect(dialog.accept)
         row.addWidget(ok_btn)
         dialog.body_layout.addLayout(row)
@@ -5648,6 +7121,8 @@ class MainWindow(QMainWindow):
         cancel_btn = QPushButton(self._t("Отмена", "Cancel"))
         ok_btn = QPushButton(self._t("Загрузить", "Load"))
         ok_btn.setProperty("class", "primary")
+        self._attach_button_animations(cancel_btn)
+        self._attach_button_animations(ok_btn)
         cancel_btn.clicked.connect(dialog.reject)
         ok_btn.clicked.connect(dialog.accept)
         row.addWidget(cancel_btn)
@@ -5668,6 +7143,8 @@ class MainWindow(QMainWindow):
         no_btn = QPushButton(self._t("Нет", "No"))
         yes_btn = QPushButton(self._t("Да", "Yes"))
         yes_btn.setProperty("class", "primary")
+        self._attach_button_animations(no_btn)
+        self._attach_button_animations(yes_btn)
         no_btn.clicked.connect(dialog.reject)
         yes_btn.clicked.connect(dialog.accept)
         row.addWidget(no_btn)
@@ -5679,7 +7156,9 @@ class MainWindow(QMainWindow):
     def refresh_components(self, payload: object | None = None) -> None:
         components: list[ComponentDefinition] = []
         states: dict[str, ComponentState] = {}
+        explicit_payload = False
         if isinstance(payload, dict):
+            explicit_payload = "components" in payload or "states" in payload
             raw_components = payload.get("components", [])
             raw_states = payload.get("states", {})
             if isinstance(raw_components, list):
@@ -5710,11 +7189,34 @@ class MainWindow(QMainWindow):
                             states[parsed.component_id] = parsed
                         except Exception:
                             continue
-        if not components:
+        if not components and not explicit_payload:
             components = list(self._component_defs().values())
-        if not states:
+        if not states and not explicit_payload:
             states = self._component_states()
         self.components_list.clear()
+        if not self._startup_snapshot_ready and not components:
+            if self._components_cards_layout is None:
+                return
+            while self._components_cards_layout.count():
+                layout_item = self._components_cards_layout.takeAt(0)
+                widget = layout_item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            loading, loading_layout = self._card()
+            loading_title = QLabel(self._t("Компоненты загружаются", "Components are loading"))
+            loading_title.setProperty("class", "title")
+            loading_text = QLabel(
+                self._t(
+                    "Подождите немного: сначала приложение получает реальный snapshot состояния компонентов.",
+                    "Please wait a moment while the app gets the real component snapshot.",
+                )
+            )
+            loading_text.setProperty("class", "muted")
+            loading_text.setWordWrap(True)
+            loading_layout.addWidget(loading_title)
+            loading_layout.addWidget(loading_text)
+            self._components_cards_layout.addWidget(loading, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            return
         for component in components:
             state = states.get(component.id)
             status_text = state.status if state else "stopped"
@@ -5777,9 +7279,25 @@ class MainWindow(QMainWindow):
             icon.setPixmap(self._icon(icons.get(component.id, "components.svg")).pixmap(icon_size, icon_size))
             icon_row = QHBoxLayout()
             icon_row.setContentsMargins(0, 12, 0, 0)
-            icon_row.setSpacing(0)
+            icon_row.setSpacing(8)
             icon_row.addWidget(icon, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             icon_row.addStretch(1)
+            if component.id in {"zapret", "tg-ws-proxy"}:
+                update_icon_btn = QToolButton()
+                update_icon_btn.setProperty("class", "action")
+                update_icon_btn.setIcon(self._icon("refresh.svg"))
+                update_icon_btn.setIconSize(QSize(16, 16))
+                update_icon_btn.setFixedSize(30, 30)
+                update_icon_btn.setToolTip(
+                    self._t("Обновить Zapret", "Update Zapret")
+                    if component.id == "zapret"
+                    else self._t("Обновить TG WS Proxy", "Update TG WS Proxy")
+                )
+                update_icon_btn.clicked.connect(
+                    self._update_zapret_runtime if component.id == "zapret" else self._update_tg_ws_proxy_runtime
+                )
+                self._attach_button_animations(update_icon_btn)
+                icon_row.addWidget(update_icon_btn, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
             card_layout.addLayout(icon_row)
 
             title = QLabel(display_name)
@@ -5871,11 +7389,6 @@ class MainWindow(QMainWindow):
                 connect_btn.clicked.connect(self._prompt_tg_proxy_connect)
                 self._attach_button_animations(connect_btn)
                 card_layout.addWidget(connect_btn)
-            if component.id == "zapret":
-                update_btn = QPushButton(self._t("Обновить Zapret", "Update Zapret"))
-                update_btn.clicked.connect(self._update_zapret_runtime)
-                self._attach_button_animations(update_btn)
-                card_layout.addWidget(update_btn)
             if state is not None and getattr(state, "last_error", ""):
                 error_label = QLabel(str(getattr(state, "last_error", "")))
                 error_label.setProperty("class", "muted")
@@ -5889,6 +7402,7 @@ class MainWindow(QMainWindow):
             )
             toggle_btn.setProperty("class", "danger" if component.enabled else "primary")
             toggle_btn.clicked.connect(lambda _=False, cid=component.id, btn=toggle_btn: self._toggle_component_card(cid, btn))
+            self._attach_button_animations(toggle_btn)
             card_layout.addWidget(toggle_btn)
             component_cards.append(card)
             self._components_cards_layout.addWidget(
@@ -5910,9 +7424,19 @@ class MainWindow(QMainWindow):
 
     def _update_zapret_runtime(self) -> None:
         try:
+            self._show_component_update_dialog("Zapret")
             self._submit_backend_task("update_zapret_runtime")
         except Exception as error:
+            self._close_component_update_dialog()
             self._show_error("Zapret", str(error))
+
+    def _update_tg_ws_proxy_runtime(self) -> None:
+        try:
+            self._show_component_update_dialog("TG WS Proxy")
+            self._submit_backend_task("update_tg_ws_proxy_runtime")
+        except Exception as error:
+            self._close_component_update_dialog()
+            self._show_error("TG WS Proxy", str(error))
 
     def _telegram_download_url(self) -> str:
         machine = platform.machine().lower()
@@ -5975,6 +7499,7 @@ class MainWindow(QMainWindow):
             return
         viewport = self._components_scroll.viewport()
         if viewport.height() <= 0:
+            QTimer.singleShot(0, self._sync_component_card_layout)
             return
         bottom_margin = self._components_cards_layout.contentsMargins().bottom()
         available_height = max(320, viewport.height() - bottom_margin)
@@ -5987,6 +7512,16 @@ class MainWindow(QMainWindow):
         for widget in widgets:
             widget.setFixedHeight(target_height)
         self._components_cards_root.updateGeometry()
+
+    def _sync_mod_card_layout(self) -> None:
+        if self.mods_scroll is None or self.mods_canvas is None or self.mods_cards_layout is None:
+            return
+        try:
+            self.mods_cards_layout.activate()
+        except Exception:
+            pass
+        self.mods_canvas.updateGeometry()
+        self.mods_scroll.viewport().update()
 
     def _refresh_mods_legacy(self) -> None:
         index = self.context.mods.fetch_index()
@@ -6040,7 +7575,156 @@ class MainWindow(QMainWindow):
                     break
 
     def _toggle_mod_by_id(self, mod_id: str) -> None:
+        try:
+            installed = dict(self._mods_installed_cache)
+            target = installed.get(mod_id)
+            if target is not None:
+                target.enabled = not bool(target.enabled)
+                self.refresh_mods({"index": list(self._mods_index_cache), "installed": installed})
+        except Exception:
+            pass
         self._submit_backend_task("toggle_mod", {"mod_id": mod_id}, action_id=f"mod:{mod_id}")
+
+    def _mod_circle_action_style(self, role: str, *, active: bool) -> str:
+        theme = self.context.settings.get().theme
+        if role == "power" and active:
+            border = "#2f8f5d"
+            fg = "#a8efc1" if not is_light_theme(theme) else "#1f6b45"
+            fill = "rgba(44, 163, 93, 0.14)"
+            hover = "rgba(44, 163, 93, 0.22)"
+        elif role == "delete":
+            border = "#fb5e5e"
+            fg = "#ffd9dd" if not is_light_theme(theme) else "#bc4357"
+            fill = "rgba(239, 68, 68, 0.08)"
+            hover = "rgba(239, 68, 68, 0.16)"
+        else:
+            if is_light_theme(theme):
+                border = "#bfd2f0"
+                fg = "#37507e"
+                fill = "rgba(191, 210, 240, 0.18)"
+                hover = "rgba(148, 170, 205, 0.28)"
+            else:
+                border = "#35517f"
+                fg = "#dbe5fb"
+                fill = "rgba(53, 81, 127, 0.16)"
+                hover = "rgba(83, 108, 148, 0.26)"
+        return (
+            "QToolButton {"
+            f"border: 1px solid {border};"
+            f"color: {fg};"
+            f"background: {fill};"
+            "border-radius: 18px;"
+            "padding: 0px;"
+            "}"
+            "QToolButton:disabled { opacity: 0.45; }"
+        )
+
+    def _choose_directory_dialog(self, title: str, start_dir: str) -> str:
+        dialog = QFileDialog(self, title, start_dir)
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return ""
+        files = dialog.selectedFiles()
+        return files[0] if files else ""
+
+    def _choose_save_file_dialog(self, title: str, start_path: str, file_filter: str) -> str:
+        _bring_widget_to_front(self)
+        start = Path(start_path)
+        self.context.logging.log("info", "Mod export save dialog opened", start_path=str(start_path))
+        selected_path = ""
+        native_failed = False
+        try:
+            dialog = QFileDialog(self, title, str(start.parent))
+            dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+            dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+            dialog.setNameFilter(file_filter)
+            dialog.setDefaultSuffix("zip")
+            dialog.selectFile(start.name)
+            dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+            result = dialog.exec()
+            if result == QDialog.DialogCode.Accepted:
+                files = dialog.selectedFiles()
+                selected_path = files[0] if files else ""
+            else:
+                self.context.logging.log("info", "Mod export native dialog cancelled")
+                return ""
+        except Exception as error:
+            native_failed = True
+            self.context.logging.log("warning", "Native save dialog failed", error=str(error))
+        if selected_path:
+            return selected_path
+        if not native_failed:
+            return ""
+        dialog = QFileDialog(self, title, str(start.parent))
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+        dialog.setNameFilter(file_filter)
+        dialog.setDefaultSuffix("zip")
+        dialog.selectFile(start.name)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.raise_()
+        dialog.activateWindow()
+        self.context.logging.log("info", "Mod export fallback dialog opened")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.context.logging.log("info", "Mod export fallback dialog cancelled")
+            return ""
+        files = dialog.selectedFiles()
+        return files[0] if files else ""
+
+    def _export_mod_by_id(self, mod_id: str) -> None:
+        self.context.logging.log("info", "Mod export requested", mod_id=mod_id)
+        try:
+            mod_entry = next(item for item in self.context.mods.list_installed() if item.id == mod_id)
+        except Exception:
+            mod_entry = None
+        suggested_name = f"{mod_id}-{getattr(mod_entry, 'version', '') or __version__}.zip"
+        desktop_dir = Path.home() / "Desktop"
+        default_dir = desktop_dir if desktop_dir.exists() else self.context.paths.install_root
+        target_path = self._choose_save_file_dialog(
+            self._t("Сохранить ZIP модификации", "Save modification ZIP"),
+            str(default_dir / suggested_name),
+            self._t("ZIP архив (*.zip)", "ZIP archive (*.zip)"),
+        )
+        if not target_path:
+            self.context.logging.log("info", "Mod export cancelled", mod_id=mod_id)
+            return
+        try:
+            if not str(target_path).lower().endswith(".zip"):
+                target_path = f"{target_path}.zip"
+            self.context.logging.log("info", "Mod export target selected", mod_id=mod_id, target_path=str(target_path))
+            archive_path = self.context.mods.export_mod(mod_id, target_path)
+            self.context.logging.log("info", "Mod export finished", mod_id=mod_id, archive_path=str(archive_path))
+            self._show_info(
+                self._t("Модификации", "Mods"),
+                self._t(
+                    f"Модификация сохранена:\n{archive_path}",
+                    f"Modification exported:\n{archive_path}",
+                ),
+            )
+        except Exception as error:
+            self.context.logging.log("error", "Mod export failed", mod_id=mod_id, error=str(error))
+            self._show_error(self._t("Модификации", "Mods"), str(error))
+
+    def _request_mod_export(self, mod_id: str) -> None:
+        self.context.logging.log("info", "Mod export click dispatched", mod_id=mod_id)
+        self._export_mod_by_id(mod_id)
+
+    def _remove_mod_with_confirmation(self, mod_id: str) -> None:
+        if not self._ask_yes_no(
+            self._t("Удалить модификацию", "Delete modification"),
+            self._t(
+                "Точно удалить эту модификацию? Это действие нельзя отменить.",
+                "Delete this modification? This action cannot be undone.",
+            ),
+        ):
+            return
+        try:
+            self._submit_backend_task("remove_mod", {"mod_id": mod_id}, action_id=f"mod-remove:{mod_id}")
+        except Exception as error:
+            self._show_error(self._t("Модификации", "Mods"), str(error))
 
     def refresh_mods(self, payload: object | None = None) -> None:
         def _field(obj: object, name: str, default: object = "") -> object:
@@ -6063,14 +7747,12 @@ class MainWindow(QMainWindow):
                     if item_id:
                         installed[item_id] = item
         if not index:
-            index = self.context.mods.fetch_index()
+            index = list(self._mods_index_cache)
         if not installed:
-            installed = {item.id: item for item in self.context.mods.list_installed()}
+            installed = dict(self._mods_installed_cache)
         combined: list[dict[str, str | bool | int]] = []
         index_map = {str(_field(item, "id", "") or ""): item for item in index if str(_field(item, "id", "") or "")}
-        installed_items = list(self.context.mods.list_installed()) if not isinstance(payload, dict) else [
-            value for _, value in installed.items()
-        ]
+        installed_items = list(installed.values())
         seen: set[str] = set()
         for order, installed_item in enumerate(installed_items):
             mod_id = str(_field(installed_item, "id", "") or "")
@@ -6261,35 +7943,48 @@ class MainWindow(QMainWindow):
 
             card_layout.addLayout(left_col, 0)
 
-            info_btn = QPushButton(self._t("Подробнее", "Details"))
-            info_btn.setIcon(self._icon("files.svg"))
-            info_btn.setIconSize(QSize(14, 14))
-            info_btn.clicked.connect(lambda _=False, m=mod: self._show_info(str(m["name"]), f"{m['description']}\n\n{m['changelog']}"))
-            self._attach_button_animations(info_btn)
-            actions.addWidget(info_btn)
-
-            toggle_btn = QPushButton(self._t("Выключить", "Disable") if enabled else self._t("Включить", "Enable"))
-            toggle_btn.setProperty("class", "primary")
+            toggle_btn = QToolButton()
+            toggle_btn.setToolTip(self._t("Выключить модификацию", "Disable modification") if enabled else self._t("Включить модификацию", "Enable modification"))
             toggle_btn.setIcon(self._icon("power.svg"))
-            toggle_btn.setIconSize(QSize(14, 14))
+            toggle_btn.setIconSize(QSize(16, 16))
+            toggle_btn.setFixedSize(36, 36)
+            toggle_btn.setProperty("hoverRadius", 18)
+            toggle_btn.setStyleSheet(self._mod_circle_action_style("power", active=enabled))
+            toggle_btn.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
             toggle_btn.clicked.connect(lambda _=False, mid=mod_id: self._toggle_mod_by_id(mid))
             self._attach_button_animations(toggle_btn)
             actions.addWidget(toggle_btn)
 
-            remove_btn = QPushButton(self._t("Удалить", "Remove"))
-            remove_btn.setProperty("class", "danger")
-            remove_btn.setIcon(self._icon("window_close.svg"))
-            remove_btn.setIconSize(QSize(14, 14))
-            remove_btn.clicked.connect(lambda _=False, mid=mod_id: self.context.mods.remove(mid) or self.refresh_all())
+            share_btn = QToolButton()
+            share_btn.setToolTip(self._t("Поделиться модификацией", "Export modification"))
+            share_btn.setIcon(self._icon("share.svg"))
+            share_btn.setIconSize(QSize(16, 16))
+            share_btn.setFixedSize(36, 36)
+            share_btn.setProperty("hoverRadius", 18)
+            share_btn.setStyleSheet(self._mod_circle_action_style("share", active=enabled))
+            share_btn.setEnabled(bool(mod.get("installed")) and mod_id != "unified-by-goshkow")
+            share_btn.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
+            share_btn.clicked.connect(lambda _=False, mid=mod_id: self._request_mod_export(mid))
+            self._attach_button_animations(share_btn)
+            if mod_id != "unified-by-goshkow":
+                actions.addWidget(share_btn)
+
+            remove_btn = QToolButton()
+            remove_btn.setToolTip(self._t("Удалить модификацию", "Delete modification"))
+            remove_btn.setIcon(self._icon("trash.svg"))
+            remove_btn.setIconSize(QSize(16, 16))
+            remove_btn.setFixedSize(36, 36)
+            remove_btn.setProperty("hoverRadius", 18)
+            remove_btn.setStyleSheet(self._mod_circle_action_style("delete", active=False))
+            remove_btn.setAttribute(Qt.WidgetAttribute.WA_NoMousePropagation, True)
+            remove_btn.clicked.connect(lambda _=False, mid=mod_id: self._remove_mod_with_confirmation(mid))
             self._attach_button_animations(remove_btn)
             if mod_id != "unified-by-goshkow":
                 actions.addWidget(remove_btn)
             head.addLayout(actions)
             body.addLayout(head)
 
-            desc = QLabel(str(mod["description"]))
-            desc.setWordWrap(True)
-            desc.setProperty("class", "modBody")
+            desc = ExpandableDescriptionLabel(str(mod["description"]))
             body.addWidget(desc)
 
             meta_row = QHBoxLayout()
@@ -6310,21 +8005,37 @@ class MainWindow(QMainWindow):
     def refresh_files(self, payload: object | None = None) -> None:
         mode_index = self._file_mode_stack.currentIndex() if self._file_mode_stack is not None else 0
         if isinstance(payload, dict):
-            if mode_index == 1 and payload.get("collection_id") == self._current_file_collection and payload.get("collection_values") is not None:
-                self._refresh_file_collection_view_with_values(list(payload.get("collection_values", [])))
-                self._set_files_mode_loading(False)
+            payload_mode = int(payload.get("mode_index", -1) or -1)
+            if payload_mode not in {-1, mode_index}:
+                return
+            payload_collection = str(payload.get("collection_id", "") or "")
+            if mode_index == 1 and payload_collection != self._current_file_collection:
+                return
+            if mode_index == 1 and payload_collection == self._current_file_collection and payload.get("collection_values") is not None:
+                incoming_values = list(payload.get("collection_values", []))
+                self._apply_file_collection_meta()
+                if incoming_values != self._current_file_values_cache or self._file_tag_flow is None or self._file_tag_flow.count() != len(incoming_values):
+                    self._refresh_file_collection_view_with_values(incoming_values, finish_loading=True)
+                else:
+                    self._set_files_mode_loading(False)
             elif mode_index == 1:
-                self._refresh_file_collection_view_with_values(self._current_file_values_cache)
+                self._apply_file_collection_meta()
                 self._set_files_mode_loading(False)
             records = payload.get("records", []) if payload.get("records") is not None else []
         else:
             if mode_index == 1:
                 self._refresh_file_collection_view()
-            records = self.context.files.list_files() if mode_index == 2 else []
+            records = []
+        if mode_index == 0:
+            QTimer.singleShot(0, self._prepare_files_page_geometry)
+            return
         if mode_index != 2:
+            if self._file_search_shell is not None:
+                self._file_search_shell.raise_()
             return
         self._set_files_mode_loading(False)
         selected = self._selected_file_path()
+        preferred = self._preferred_file_path
         self.files_list.clear()
         for record in records:
             row_item = QListWidgetItem(f"{record.relative_path}\n{self._t('Размер', 'Size')}: {record.size} {self._t('байт', 'bytes')}")
@@ -6336,7 +8047,18 @@ class MainWindow(QMainWindow):
             self.file_editor.clear()
             self._set_file_editor_loading(False)
             return
-        if selected:
+        if preferred:
+            for i in range(self.files_list.count()):
+                it = self.files_list.item(i)
+                if it.data(Qt.ItemDataRole.UserRole) == preferred:
+                    self.files_list.setCurrentItem(it)
+                    self._preferred_file_path = ""
+                    break
+            else:
+                self._preferred_file_path = ""
+                if self.files_list.count() > 0:
+                    self.files_list.setCurrentRow(0)
+        elif selected:
             for i in range(self.files_list.count()):
                 it = self.files_list.item(i)
                 if it.data(Qt.ItemDataRole.UserRole) == selected:
@@ -6347,6 +8069,8 @@ class MainWindow(QMainWindow):
                     self.files_list.setCurrentRow(0)
         elif self.files_list.count() > 0:
             self.files_list.setCurrentRow(0)
+        if self._file_search_shell is not None:
+            self._file_search_shell.raise_()
 
     def _advance_files_loading_frame(self) -> None:
         self._files_loading_frame = (self._files_loading_frame + 1) % 4
@@ -6358,14 +8082,17 @@ class MainWindow(QMainWindow):
         if self._files_editor_loading_label is not None:
             self._files_editor_loading_label.setText(f"{self._t('Загрузка файла', 'Loading file')}{dots}")
 
-    def _set_files_mode_loading(self, loading: bool) -> None:
-        mode_index = self._file_mode_stack.currentIndex() if self._file_mode_stack is not None else 0
+    def _set_files_mode_loading(self, loading: bool, *, mode_index_override: int | None = None) -> None:
+        mode_index = mode_index_override if mode_index_override is not None else (
+            self._file_mode_stack.currentIndex() if self._file_mode_stack is not None else 0
+        )
+        self._files_loading_mode_index = mode_index
         if self._files_tags_stack is not None:
             self._files_tags_stack.setCurrentIndex(0 if (loading and mode_index == 1) else 1)
         if self._files_list_stack is not None:
             self._files_list_stack.setCurrentIndex(0 if (loading and mode_index == 2) else 1)
-        if self._files_editor_stack is not None and mode_index == 2 and loading:
-            self._files_editor_stack.setCurrentIndex(0)
+        if self._files_editor_stack is not None and mode_index == 2:
+            self._files_editor_stack.setCurrentIndex(0 if loading else 1)
         active = (
             (self._files_tags_stack is not None and self._files_tags_stack.currentIndex() == 0)
             or (self._files_list_stack is not None and self._files_list_stack.currentIndex() == 0)
@@ -6437,6 +8164,8 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "pages") or self.pages.currentIndex() != 4:
             self._set_logs_live_enabled(False)
             return
+        if self._logs_view_update_locked():
+            return
         self._request_page_refresh("logs")
 
     def refresh_logs(self, payload: object | None = None) -> None:
@@ -6452,17 +8181,46 @@ class MainWindow(QMainWindow):
         elif isinstance(payload, list):
             lines = payload
         else:
-            lines = self.context.logging.read_source_lines(self._current_log_source)
+            lines = []
+        if self._logs_view_update_locked():
+            self._pending_logs_payload = {
+                "source": self._current_log_source,
+                "lines": list(lines),
+            }
+            if self._logs_stack is not None:
+                self._logs_stack.setCurrentIndex(1)
+            return
+        self._pending_logs_payload = None
         scrollbar = self.logs_text.verticalScrollBar()
         at_bottom = scrollbar.value() >= max(0, scrollbar.maximum() - 4)
         old_value = scrollbar.value()
         if self._logs_stack is not None:
             self._logs_stack.setCurrentIndex(1)
         self.logs_text.setPlainText("\n".join(lines) if lines else self._t("Логи пока пустые.", "No logs yet."))
-        if at_bottom:
-            scrollbar.setValue(scrollbar.maximum())
-        else:
-            scrollbar.setValue(min(old_value, scrollbar.maximum()))
+        target_value = None if at_bottom else old_value
+
+        def _restore_scroll_position() -> None:
+            if target_value is None:
+                scrollbar.setValue(scrollbar.maximum())
+            else:
+                scrollbar.setValue(min(target_value, scrollbar.maximum()))
+
+        QTimer.singleShot(0, _restore_scroll_position)
+
+    def _logs_view_update_locked(self) -> bool:
+        if not hasattr(self, "logs_text") or self.logs_text is None:
+            return False
+        try:
+            return self.logs_text.textCursor().hasSelection()
+        except Exception:
+            return False
+
+    def _on_logs_selection_changed(self) -> None:
+        if self._logs_view_update_locked():
+            return
+        pending = self._pending_logs_payload
+        if isinstance(pending, dict):
+            self.refresh_logs(pending)
 
 
 

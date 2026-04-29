@@ -1,58 +1,22 @@
 name: Release Build
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Git tag or release version (for example v1.4.1)"
+        description: "Git tag or release version (for example v1.4.2)"
         required: true
-        default: "v1.4.1"
+        default: "v1.4.2"
       release_name:
         description: "Release title"
         required: true
-        default: "Zapret Hub 1.4.1"
+        default: "Zapret Hub 1.4.2"
+      changelog:
+        description: "Release changelog"
+        required: true
 
 jobs:
-  prepare-release:
-    runs-on: windows-latest
-    outputs:
-      tag: ${{ steps.meta.outputs.tag }}
-      version: ${{ steps.meta.outputs.version }}
-      name: ${{ steps.meta.outputs.name }}
-      body_file: ${{ steps.meta.outputs.body_file }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Resolve release metadata
-        id: meta
-        shell: pwsh
-        run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ inputs.tag }}"
-            $name = "${{ inputs.release_name }}"
-          } else {
-            $tag = "${{ github.ref_name }}"
-            $name = ""
-          }
-          $version = $tag.TrimStart('v')
-          if ([string]::IsNullOrWhiteSpace($name)) {
-            $name = "Zapret Hub $version"
-          }
-          $bodyFile = ".github/release-notes/$version.md"
-          if (-not (Test-Path $bodyFile)) {
-            throw "Release notes file not found: $bodyFile"
-          }
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "body_file=$bodyFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-  build-x64:
-    needs: prepare-release
+  build-windows-x64:
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -65,23 +29,24 @@ jobs:
 
       - name: Install dependencies
         shell: pwsh
+        env:
+          PIP_PREFER_BINARY: "1"
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .[dev]
 
-      - name: Build x64 application
+      - name: Build Nuitka x64
         shell: pwsh
-        run: python -m PyInstaller -y .\packaging\zapret_hub.spec
+        run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka
 
-      - name: Upload x64 build
+      - name: Upload x64 artifact
         uses: actions/upload-artifact@v6
         with:
-          name: zapret-hub-x64
-          path: dist/zapret_hub/**
+          name: nuitka-win-x64
+          path: dist_nuitka/main.dist/**
           if-no-files-found: error
 
-  build-arm64:
-    needs: prepare-release
+  build-windows-arm64:
     runs-on: windows-11-arm
     steps:
       - name: Checkout
@@ -92,7 +57,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Set up Rust
+      - name: Install Rust fallback
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
@@ -103,22 +68,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .[dev]
 
-      - name: Build ARM64 application
+      - name: Build Nuitka arm64
         shell: pwsh
-        run: python -m PyInstaller -y .\packaging\zapret_hub.spec
+        run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka
 
-      - name: Upload ARM64 build
+      - name: Upload arm64 artifact
         uses: actions/upload-artifact@v6
         with:
-          name: zapret-hub-arm64
-          path: dist/zapret_hub/**
+          name: nuitka-win-arm64
+          path: dist_nuitka/main.dist/**
           if-no-files-found: error
 
-  release-windows:
+  package-release:
     needs:
-      - prepare-release
-      - build-x64
-      - build-arm64
+      - build-windows-x64
+      - build-windows-arm64
     runs-on: windows-latest
     permissions:
       contents: write
@@ -133,46 +97,52 @@ jobs:
 
       - name: Install dependencies
         shell: pwsh
+        env:
+          PIP_PREFER_BINARY: "1"
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .[dev]
 
-      - name: Download x64 build
+      - name: Download x64 artifact
         uses: actions/download-artifact@v5
         with:
-          name: zapret-hub-x64
-          path: dist/zapret_hub
+          name: nuitka-win-x64
+          path: .artifacts/win_x64
 
-      - name: Download ARM64 build
+      - name: Download arm64 artifact
         uses: actions/download-artifact@v5
         with:
-          name: zapret-hub-arm64
-          path: .release_cache/win_arm64
+          name: nuitka-win-arm64
+          path: .artifacts/win_arm64
 
-      - name: Prepare payload
+      - name: Prepare release payloads
         shell: pwsh
-        run: python .\_refresh_release.py
+        run: >
+          python .\scripts\prepare_nuitka_release.py
+          --x64-source .\.artifacts\win_x64
+          --arm64-source .\.artifacts\win_arm64
+          --payload-dir .\installer_payload
+          --release-dir .\release_1.4.2
+          --version 1.4.2
 
-      - name: Build installer
+      - name: Build universal installer
         shell: pwsh
-        run: python -m PyInstaller -y .\packaging\install_zaprethub.spec
+        run: .\scripts\build_nuitka_installer.ps1 -Python python -PayloadDir installer_payload -OutputDir dist_installer
 
-      - name: Refresh release files
+      - name: Place installer into release folder
         shell: pwsh
-        env:
-          ZAPRET_HUB_RELEASE_UNIVERSAL: "1"
-        run: python .\_refresh_release.py
+        run: Copy-Item .\dist_installer\install_zaprethub_1.4.2_universal.exe .\release_1.4.2\ -Force
 
       - name: SignPath placeholder
         shell: pwsh
-        run: .\scripts\signpath_stub.ps1 -InputPath ".\dist\zapret_hub\zapret_hub.exe"
+        run: .\scripts\signpath_stub.ps1 -InputPath ".\.artifacts\win_x64\zapret_hub.exe"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.prepare-release.outputs.tag }}
-          name: ${{ needs.prepare-release.outputs.name }}
-          body_path: ${{ needs.prepare-release.outputs.body_file }}
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.release_name }}
+          body: ${{ inputs.changelog }}
           files: |
-            release_1.4.1/install_zaprethub_1.4.1_Universal.exe
-            release_1.4.1/*.zip
+            release_1.4.2/install_zaprethub_1.4.2_universal.exe
+            release_1.4.2/*portable*.zip

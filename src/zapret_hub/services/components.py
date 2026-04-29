@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
+from zapret_hub import __version__
 from zapret_hub.domain import ComponentDefinition, ComponentState
+from zapret_hub.runtime_env import is_packaged_runtime
 from zapret_hub.services.logging_service import LoggingManager
 from zapret_hub.services.settings import SettingsManager
 from zapret_hub.services.storage import StorageManager
@@ -808,7 +810,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def _build_worker_command(self, worker: str, **kwargs: Any) -> list[str]:
         cmd: list[str]
-        if getattr(sys, "frozen", False):
+        if is_packaged_runtime():
             cmd = [sys.executable, "--worker", worker]
         else:
             cmd = [self._worker_python_executable(), "-m", "zapret_hub.worker_entry", "--worker", worker]
@@ -820,7 +822,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def _build_worker_env(self) -> dict[str, str]:
         env = os.environ.copy()
-        if not getattr(sys, "frozen", False):
+        if not is_packaged_runtime():
             src_root = str(self.storage.paths.install_root / "src")
             current = str(env.get("PYTHONPATH", "") or "")
             parts = [item for item in current.split(os.pathsep) if item]
@@ -830,7 +832,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         return env
 
     def _worker_python_executable(self) -> str:
-        if getattr(sys, "frozen", False):
+        if is_packaged_runtime():
             return sys.executable
         install_root = self.storage.paths.install_root
         candidates = [
@@ -1215,7 +1217,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
 
     def fetch_latest_zapret_release(self) -> dict[str, str]:
         api_url = "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest"
-        request = Request(api_url, headers={"User-Agent": "ZapretHub/1.4.1"})
+        request = Request(api_url, headers={"User-Agent": f"ZapretHub/{__version__}"})
         with urlopen(request, timeout=20) as response:
             payload = json.loads(response.read().decode("utf-8"))
         latest_version = str(payload.get("tag_name") or payload.get("name") or "").strip().lstrip("v")
@@ -1233,6 +1235,28 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             "asset_name": str((asset or {}).get("name", "")),
         }
 
+    def fetch_latest_tg_ws_proxy_release(self) -> dict[str, str]:
+        api_url = "https://api.github.com/repos/Flowseal/tg-ws-proxy/releases/latest"
+        request = Request(api_url, headers={"User-Agent": f"ZapretHub/{__version__}"})
+        with urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        latest_version = str(payload.get("tag_name") or payload.get("name") or "").strip().lstrip("v")
+        assets = [item for item in list(payload.get("assets") or []) if isinstance(item, dict)]
+        windows_asset = next(
+            (
+                item
+                for item in assets
+                if str(item.get("name", "")).strip().lower() == "tgwsproxy_windows.exe"
+            ),
+            None,
+        )
+        return {
+            "latest_version": latest_version,
+            "source_url": str(payload.get("zipball_url") or "").strip(),
+            "exe_url": str((windows_asset or {}).get("browser_download_url", "")).strip(),
+            "exe_name": str((windows_asset or {}).get("name", "")).strip() or "TgWsProxy_windows.exe",
+        }
+
     def update_zapret_runtime(self) -> dict[str, str]:
         release = self.fetch_latest_zapret_release()
         latest_version = str(release.get("latest_version", "")).strip()
@@ -1247,7 +1271,7 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
         temp_root = Path(tempfile.mkdtemp(prefix="zapret_hub_zapret_update_"))
         try:
             zip_path = temp_root / (release.get("asset_name") or "zapret.zip")
-            with urlopen(Request(asset_url, headers={"User-Agent": "ZapretHub/1.4.1"}), timeout=60) as response:
+            with urlopen(Request(asset_url, headers={"User-Agent": f"ZapretHub/{__version__}"}), timeout=60) as response:
                 zip_path.write_bytes(response.read())
             extract_root = temp_root / "extract"
             extract_root.mkdir(parents=True, exist_ok=True)
@@ -1272,6 +1296,74 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
             if was_running:
                 self.start_component("zapret")
             self.logging.log("info", "Zapret updated", version=latest_version, backup=str(backup.path if backup else ""))
+            return {"status": "updated", "version": latest_version or current_version}
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def update_tg_ws_proxy_runtime(self) -> dict[str, str]:
+        release = self.fetch_latest_tg_ws_proxy_release()
+        latest_version = str(release.get("latest_version", "")).strip()
+        current_version = self.storage._detect_tgws_version()
+        if latest_version and current_version == latest_version:
+            return {"status": "up-to-date", "version": current_version}
+        source_url = str(release.get("source_url", "")).strip()
+        exe_url = str(release.get("exe_url", "")).strip()
+        if not source_url or not exe_url:
+            return {"status": "error", "error": "No tg-ws-proxy source or Windows asset found"}
+
+        runtime_root = self.storage.paths.runtime_dir / "tg-ws-proxy"
+        was_running = False
+        try:
+            tg_state = next((item for item in self.list_states() if item.component_id == "tg-ws-proxy"), None)
+            was_running = bool(tg_state and tg_state.status == "running")
+        except Exception:
+            was_running = False
+        temp_root = Path(tempfile.mkdtemp(prefix="zapret_hub_tgws_update_"))
+        try:
+            source_zip = temp_root / "tg-ws-proxy.zip"
+            with urlopen(Request(source_url, headers={"User-Agent": f"ZapretHub/{__version__}"}), timeout=60) as response:
+                source_zip.write_bytes(response.read())
+            extract_root = temp_root / "extract"
+            extract_root.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(source_zip, "r") as archive:
+                archive.extractall(extract_root)
+            source_root = next((p for p in extract_root.iterdir() if p.is_dir() and (p / "proxy").exists()), None)
+            if source_root is None:
+                return {"status": "error", "error": "Invalid tg-ws-proxy source archive"}
+
+            windows_exe_path = temp_root / str(release.get("exe_name", "TgWsProxy_windows.exe"))
+            with urlopen(Request(exe_url, headers={"User-Agent": f"ZapretHub/{__version__}"}), timeout=60) as response:
+                windows_exe_path.write_bytes(response.read())
+
+            if was_running:
+                self.stop_component("tg-ws-proxy")
+
+            backup = self.storage.create_backup(runtime_root, "pre-update-tg-ws-proxy")
+            staging_root = temp_root / "runtime_new"
+            shutil.copytree(source_root, staging_root, dirs_exist_ok=True)
+            (staging_root / "bin").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(windows_exe_path, staging_root / "bin" / "TgWsProxy_windows.exe")
+
+            if runtime_root.exists():
+                shutil.rmtree(runtime_root, ignore_errors=True)
+            shutil.copytree(staging_root, runtime_root, dirs_exist_ok=True)
+            init_py = runtime_root / "proxy" / "__init__.py"
+            if latest_version and init_py.exists():
+                try:
+                    content = init_py.read_text(encoding="utf-8", errors="ignore")
+                    content = re.sub(r'__version__\s*=\s*["\'].*?["\']', f'__version__ = "{latest_version}"', content, count=1)
+                    init_py.write_text(content, encoding="utf-8")
+                except Exception:
+                    pass
+            self.storage.ensure_layout()
+            if was_running:
+                self.start_component("tg-ws-proxy")
+            self.logging.log(
+                "info",
+                "TG WS Proxy updated",
+                version=latest_version,
+                backup=str(backup.path if backup else ""),
+            )
             return {"status": "updated", "version": latest_version or current_version}
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)

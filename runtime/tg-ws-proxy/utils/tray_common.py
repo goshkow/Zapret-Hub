@@ -132,7 +132,7 @@ def load_config() -> dict:
                 data.setdefault(k, v)
             return data
         except Exception as exc:
-            log.warning("Failed to load config: %s", exc)
+            log.warning("Failed to load config: %s", repr(exc))
     return dict(DEFAULT_CONFIG)
 
 
@@ -242,7 +242,7 @@ def _run_proxy_thread(on_port_busy: Callable[[str], None]) -> None:
     try:
         loop.run_until_complete(_run(stop_event=stop_ev))
     except Exception as exc:
-        log.error("Proxy thread crashed: %s", exc)
+        log.error("Proxy thread crashed: %s", repr(exc))
         if "Address already in use" in str(exc) or "10048" in str(exc):
             on_port_busy(
                 "Не удалось запустить прокси:\n"
@@ -391,7 +391,7 @@ def maybe_notify_update(
             ):
                 webbrowser.open(url)
         except Exception as exc:
-            log.debug("Update check failed: %s", exc)
+            log.warning("Update check failed: %s", repr(exc))
 
     threading.Thread(target=_work, daemon=True, name="update-check").start()
 

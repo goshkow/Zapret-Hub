@@ -1,17 +1,32 @@
 from __future__ import annotations
 
+import argparse
+import asyncio
+import hashlib
+import logging
+import logging.handlers
+import socket as _socket
+import struct
 import sys
 import traceback
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+# Force Nuitka to bundle the stdlib and crypto dependencies that are only
+# imported by the external tg-ws-proxy runtime package at worker startup.
+from cryptography.hazmat.primitives.ciphers import Cipher as _Cipher
+from cryptography.hazmat.primitives.ciphers import algorithms as _algorithms
+from cryptography.hazmat.primitives.ciphers import modes as _modes
+from zapret_hub.runtime_env import development_install_root, is_packaged_runtime, packaged_install_root, packaged_resource_root
+
 
 def run_tg_ws_proxy_worker(host: str, port: int, secret: str, verbose: bool = False) -> int:
-    if getattr(sys, "frozen", False):
-        install_root = Path(sys.executable).resolve().parent
-        resource_root = Path(getattr(sys, "_MEIPASS", install_root))
+    if is_packaged_runtime():
+        install_root = packaged_install_root()
+        resource_root = packaged_resource_root()
     else:
-        install_root = Path.cwd()
+        install_root = development_install_root(__file__)
         resource_root = install_root
     tg_repo = install_root / "runtime" / "tg-ws-proxy"
     if not tg_repo.exists():
@@ -58,9 +73,9 @@ def run_tg_ws_proxy_worker(host: str, port: int, secret: str, verbose: bool = Fa
         sys.argv = prev_argv
     return 0
 def _resolve_install_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path.cwd()
+    if is_packaged_runtime():
+        return packaged_install_root()
+    return development_install_root(__file__)
 
 
 def _write_worker_error(install_root: Path, message: str, filename: str) -> None:

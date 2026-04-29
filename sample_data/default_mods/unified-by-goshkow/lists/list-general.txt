@@ -10,6 +10,7 @@ api.telegram.org
 api1.telegram.org
 api2.telegram.org
 api3.telegram.org
+cloudfront.net
 api-docs.telegram.org
 apollo.telegram.org
 ares.telegram.org

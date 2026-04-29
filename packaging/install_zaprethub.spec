@@ -14,8 +14,8 @@ from PyInstaller.utils.win32.versioninfo import (
 project_root = Path(SPECPATH).resolve().parent
 version_info = VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(1, 4, 1, 0),
-        prodvers=(1, 4, 1, 0),
+        filevers=(1, 4, 2, 0),
+        prodvers=(1, 4, 2, 0),
         mask=0x3F,
         flags=0x0,
         OS=0x40004,
@@ -31,11 +31,11 @@ version_info = VSVersionInfo(
                     [
                         StringStruct("CompanyName", "goshkow"),
                         StringStruct("FileDescription", "Zapret Hub Installer"),
-                        StringStruct("FileVersion", "1.4.1"),
+                        StringStruct("FileVersion", "1.4.2"),
                         StringStruct("InternalName", "install_zaprethub"),
                         StringStruct("OriginalFilename", "install_zaprethub.exe"),
                         StringStruct("ProductName", "Zapret Hub"),
-                        StringStruct("ProductVersion", "1.4.1"),
+                        StringStruct("ProductVersion", "1.4.2"),
                         StringStruct("Publisher", "goshkow"),
                     ],
                 )

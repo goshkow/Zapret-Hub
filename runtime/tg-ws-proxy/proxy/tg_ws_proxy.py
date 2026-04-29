@@ -4,7 +4,6 @@ import os
 import sys
 import time
 import struct
-import random
 import asyncio
 import hashlib
 import argparse
@@ -25,18 +24,19 @@ if __name__ == '__main__' and (__package__ is None or __package__ == ''):
 
 from .utils import *
 from .stats import stats
-from .config import proxy_config, parse_dc_ip_list, start_cfproxy_domain_refresh, CFPROXY_DEFAULT_DOMAINS
+from .config import proxy_config, parse_dc_ip_list, start_cfproxy_domain_refresh
 from .bridge import MsgSplitter, CryptoCtx, do_fallback, bridge_ws_reencrypt
 from .raw_websocket import RawWebSocket, WsHandshakeError, set_sock_opts
 from .fake_tls import proxy_to_masking_domain, verify_client_hello, build_server_hello, FakeTlsStream, TLS_RECORD_HANDSHAKE
+from .balancer import balancer
 
 
 log = logging.getLogger('tg-mtproto-proxy')
 
 DC_FAIL_COOLDOWN = 30.0
 WS_FAIL_TIMEOUT = 2.0
-ws_blacklist: Set[Tuple[int, bool]] = set()
-dc_fail_until: Dict[Tuple[int, bool], float] = {}
+ws_blacklist: Set[str] = set()
+dc_fail_until: Dict[str, float] = {}
 
 
 def _try_handshake(handshake: bytes, secret: bytes) -> Optional[Tuple[int, bool, bytes, bytes]]:
@@ -191,7 +191,7 @@ class _WsPool:
         except Exception:
             pass
 
-    async def warmup(self, dc_redirects: Dict[int, Optional[str]]):
+    async def warmup(self, dc_redirects: Dict[int, str]):
         for dc, target_ip in dc_redirects.items():
             if target_ip is None:
                 continue
@@ -207,6 +207,146 @@ class _WsPool:
 _ws_pool = _WsPool()
 
 
+async def _read_client_init(reader, writer, secret, label, masking):
+    if proxy_config.proxy_protocol:
+        try:
+            pp_line = await asyncio.wait_for(
+                reader.readline(), timeout=10)
+        except asyncio.IncompleteReadError:
+            log.debug("[%s] disconnected during PROXY header", label)
+            return None
+        pp_text = pp_line.decode('ascii', errors='replace').strip()
+        if pp_text.startswith('PROXY '):
+            parts = pp_text.split()
+            if len(parts) >= 6:
+                label = f"{parts[2]}:{parts[4]}"
+            log.debug("[%s] PROXY protocol: %s", label, pp_text)
+        else:
+            log.debug("[%s] expected PROXY header, got: %r", label,
+                      pp_text[:60])
+
+    try:
+        first_byte = await asyncio.wait_for(
+            reader.readexactly(1), timeout=10)
+    except asyncio.IncompleteReadError:
+        log.debug("[%s] client disconnected before handshake", label)
+        return None
+
+    if first_byte[0] == TLS_RECORD_HANDSHAKE and masking:
+        try:
+            hdr_rest = await asyncio.wait_for(
+                reader.readexactly(4), timeout=10)
+        except asyncio.IncompleteReadError:
+            log.debug("[%s] incomplete TLS record header", label)
+            return None
+
+        tls_header = first_byte + hdr_rest
+        record_len = struct.unpack('>H', tls_header[3:5])[0]
+
+        try:
+            record_body = await asyncio.wait_for(
+                reader.readexactly(record_len), timeout=10)
+        except asyncio.IncompleteReadError:
+            log.debug("[%s] incomplete TLS record body", label)
+            return None
+
+        client_hello = tls_header + record_body
+
+        tls_result = verify_client_hello(client_hello, secret)
+
+        if tls_result is None:
+            log.debug("[%s] Fake TLS verify failed (size=%d rec=%d) "
+                      "-> masking",
+                      label, len(client_hello), record_len)
+            await proxy_to_masking_domain(
+                reader, writer, client_hello, masking, label)
+            return None
+
+        client_random, session_id, ts = tls_result
+        log.debug("[%s] Fake TLS handshake ok (ts=%d)", label, ts)
+
+        server_hello = build_server_hello(secret, client_random, session_id)
+        writer.write(server_hello)
+        await writer.drain()
+
+        tls_stream = FakeTlsStream(reader, writer)
+
+        try:
+            handshake = await asyncio.wait_for(
+                tls_stream.readexactly(HANDSHAKE_LEN), timeout=10)
+        except asyncio.IncompleteReadError:
+            log.debug("[%s] incomplete obfs2 init inside TLS", label)
+            return None
+
+        return handshake, tls_stream, tls_stream, label
+
+    elif masking:
+        log.debug("[%s] non-TLS byte 0x%02X -> HTTP redirect", label,
+                  first_byte[0])
+        redirect = (
+            f"HTTP/1.1 301 Moved Permanently\r\n"
+            f"Location: https://{masking}/\r\n"
+            f"Content-Length: 0\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode()
+        writer.write(redirect)
+        await writer.drain()
+        return None
+
+    else:
+        try:
+            rest = await asyncio.wait_for(
+                reader.readexactly(HANDSHAKE_LEN - 1), timeout=10)
+        except asyncio.IncompleteReadError:
+            log.debug("[%s] client disconnected before handshake", label)
+            return None
+        return first_byte + rest, reader, writer, label
+
+
+def _build_crypto_ctx(client_dec_prekey_iv, secret, relay_init):
+    # key = SHA256(prekey + secret), iv from handshake
+    # "dec" = decrypt data from client; "enc" = encrypt data to client
+    clt_dec_prekey = client_dec_prekey_iv[:PREKEY_LEN]
+    clt_dec_iv = client_dec_prekey_iv[PREKEY_LEN:]
+    clt_dec_key = hashlib.sha256(clt_dec_prekey + secret).digest()
+
+    clt_enc_prekey_iv = client_dec_prekey_iv[::-1]
+    clt_enc_key = hashlib.sha256(
+        clt_enc_prekey_iv[:PREKEY_LEN] + secret).digest()
+    clt_enc_iv = clt_enc_prekey_iv[PREKEY_LEN:]
+
+    clt_decryptor = Cipher(
+        algorithms.AES(clt_dec_key), modes.CTR(clt_dec_iv)
+    ).encryptor()
+    clt_encryptor = Cipher(
+        algorithms.AES(clt_enc_key), modes.CTR(clt_enc_iv)
+    ).encryptor()
+
+    # fast-forward client decryptor past the 64-byte init
+    clt_decryptor.update(ZERO_64)
+
+    # relay side: standard obfuscation (no secret hash, raw key)
+    relay_enc_key = relay_init[SKIP_LEN:SKIP_LEN + PREKEY_LEN]
+    relay_enc_iv = relay_init[SKIP_LEN + PREKEY_LEN:
+                              SKIP_LEN + PREKEY_LEN + IV_LEN]
+
+    relay_dec_prekey_iv = relay_init[SKIP_LEN:
+                                     SKIP_LEN + PREKEY_LEN + IV_LEN][::-1]
+    relay_dec_key = relay_dec_prekey_iv[:KEY_LEN]
+    relay_dec_iv = relay_dec_prekey_iv[KEY_LEN:]
+
+    tg_encryptor = Cipher(
+        algorithms.AES(relay_enc_key), modes.CTR(relay_enc_iv)
+    ).encryptor()
+    tg_decryptor = Cipher(
+        algorithms.AES(relay_dec_key), modes.CTR(relay_dec_iv)
+    ).encryptor()
+
+    tg_encryptor.update(ZERO_64)
+
+    return CryptoCtx(clt_decryptor, clt_encryptor, tg_encryptor, tg_decryptor)
+
+
 async def _handle_client(reader, writer, secret: bytes):
     stats.connections_total += 1
     stats.connections_active += 1
@@ -215,114 +355,24 @@ async def _handle_client(reader, writer, secret: bytes):
 
     set_sock_opts(writer.transport, proxy_config.buffer_size)
 
-    tls_stream = None
-    masking = proxy_config.fake_tls_domain
-
     try:
-        if proxy_config.proxy_protocol:
-            try:
-                pp_line = await asyncio.wait_for(
-                    reader.readline(), timeout=10)
-            except asyncio.IncompleteReadError:
-                log.debug("[%s] disconnected during PROXY header", label)
-                return
-            pp_text = pp_line.decode('ascii', errors='replace').strip()
-            if pp_text.startswith('PROXY '):
-                parts = pp_text.split()
-                if len(parts) >= 6:
-                    label = f"{parts[2]}:{parts[4]}"
-                log.debug("[%s] PROXY protocol: %s", label, pp_text)
-            else:
-                log.debug("[%s] expected PROXY header, got: %r", label,
-                          pp_text[:60])
-
-        try:
-            first_byte = await asyncio.wait_for(
-                reader.readexactly(1), timeout=10)
-        except asyncio.IncompleteReadError:
-            log.debug("[%s] client disconnected before handshake", label)
+        init = await _read_client_init(
+            reader, writer, secret, label, proxy_config.fake_tls_domain)
+        if init is None:
             return
 
-        if first_byte[0] == TLS_RECORD_HANDSHAKE and masking:
-            try:
-                hdr_rest = await asyncio.wait_for(
-                    reader.readexactly(4), timeout=10)
-            except asyncio.IncompleteReadError:
-                log.debug("[%s] incomplete TLS record header", label)
-                return
-
-            tls_header = first_byte + hdr_rest
-            record_len = struct.unpack('>H', tls_header[3:5])[0]
-
-            try:
-                record_body = await asyncio.wait_for(
-                    reader.readexactly(record_len), timeout=10)
-            except asyncio.IncompleteReadError:
-                log.debug("[%s] incomplete TLS record body", label)
-                return
-
-            client_hello = tls_header + record_body
-
-            tls_result = verify_client_hello(client_hello, secret)
-
-            if tls_result is None:
-                log.debug("[%s] Fake TLS verify failed (size=%d rec=%d) "
-                          "-> masking",
-                          label, len(client_hello), record_len)
-                await proxy_to_masking_domain(
-                    reader, writer, client_hello, masking, label)
-                return
-
-            client_random, session_id, ts = tls_result
-            log.debug("[%s] Fake TLS handshake ok (ts=%d)", label, ts)
-
-            server_hello = build_server_hello(secret, client_random, session_id)
-            writer.write(server_hello)
-            await writer.drain()
-
-            tls_stream = FakeTlsStream(reader, writer)
-
-            try:
-                handshake = await asyncio.wait_for(
-                    tls_stream.readexactly(HANDSHAKE_LEN), timeout=10)
-            except asyncio.IncompleteReadError:
-                log.debug("[%s] incomplete obfs2 init inside TLS", label)
-                return
-        elif masking:
-            log.debug("[%s] non-TLS byte 0x%02X -> HTTP redirect", label,
-                      first_byte[0])
-            redirect = (
-                f"HTTP/1.1 301 Moved Permanently\r\n"
-                f"Location: https://{masking}/\r\n"
-                f"Content-Length: 0\r\n"
-                f"Connection: close\r\n\r\n"
-            ).encode()
-            writer.write(redirect)
-            await writer.drain()
-            return
-        else:
-            try:
-                rest = await asyncio.wait_for(
-                    reader.readexactly(HANDSHAKE_LEN - 1), timeout=10)
-            except asyncio.IncompleteReadError:
-                log.debug("[%s] client disconnected before handshake", label)
-                return
-            handshake = first_byte + rest
+        handshake, clt_reader, clt_writer, label = init
 
         result = _try_handshake(handshake, secret)
         if result is None:
             stats.connections_bad += 1
-            log.debug("[%s] bad handshake (wrong secret or proto)", label)
+            log.warning("[%s] bad handshake (wrong secret or proto)", label)
             try:
-                drain_src = tls_stream or reader
-                while await drain_src.read(4096):
+                while await clt_reader.read(4096):
                     pass
             except Exception:
                 pass
             return
-
-        clt_reader = tls_stream or reader
-        clt_writer = tls_stream or writer
 
         dc, is_media, proto_tag, client_dec_prekey_iv = result
 
@@ -339,48 +389,7 @@ async def _handle_client(reader, writer, secret: bytes):
                   label, dc, ' media' if is_media else '', proto_int)
 
         relay_init = _generate_relay_init(proto_tag, dc_idx)
-
-        # key = SHA256(prekey + secret), iv from handshake
-        # "dec" = decrypt data from client; "enc" = encrypt data to client
-        clt_dec_prekey = client_dec_prekey_iv[:PREKEY_LEN]
-        clt_dec_iv = client_dec_prekey_iv[PREKEY_LEN:]
-        clt_dec_key = hashlib.sha256(clt_dec_prekey + secret).digest()
-
-        clt_enc_prekey_iv = client_dec_prekey_iv[::-1]
-        clt_enc_key = hashlib.sha256(
-            clt_enc_prekey_iv[:PREKEY_LEN] + secret).digest()
-        clt_enc_iv = clt_enc_prekey_iv[PREKEY_LEN:]
-
-        clt_decryptor = Cipher(
-            algorithms.AES(clt_dec_key), modes.CTR(clt_dec_iv)
-        ).encryptor()
-        clt_encryptor = Cipher(
-            algorithms.AES(clt_enc_key), modes.CTR(clt_enc_iv)
-        ).encryptor()
-
-        # fast-forward client decryptor past the 64-byte init
-        clt_decryptor.update(ZERO_64)
-
-        # relay side: standard obfuscation (no secret hash, raw key)
-        relay_enc_key = relay_init[SKIP_LEN:SKIP_LEN + PREKEY_LEN]
-        relay_enc_iv = relay_init[SKIP_LEN + PREKEY_LEN:
-                                  SKIP_LEN + PREKEY_LEN + IV_LEN]
-
-        relay_dec_prekey_iv = relay_init[SKIP_LEN:
-                                         SKIP_LEN + PREKEY_LEN + IV_LEN][::-1]
-        relay_dec_key = relay_dec_prekey_iv[:KEY_LEN]
-        relay_dec_iv = relay_dec_prekey_iv[KEY_LEN:]
-
-        tg_encryptor = Cipher(
-            algorithms.AES(relay_enc_key), modes.CTR(relay_enc_iv)
-        ).encryptor()
-        tg_decryptor = Cipher(
-            algorithms.AES(relay_dec_key), modes.CTR(relay_dec_iv)
-        ).encryptor()
-        
-        tg_encryptor.update(ZERO_64)
-
-        ctx = CryptoCtx(clt_decryptor, clt_encryptor, tg_encryptor, tg_decryptor)
+        ctx = _build_crypto_ctx(client_dec_prekey_iv, secret, relay_init)
 
         dc_key = f'{dc}{"m" if is_media else ""}'
         media_tag = " media" if is_media else ""
@@ -448,7 +457,7 @@ async def _handle_client(reader, writer, secret: bytes):
                     stats.ws_errors += 1
                     all_redirects = False
                     log.warning("[%s] DC%d%s WS connect failed: %s",
-                                label, dc, media_tag, exc)
+                                label, dc, media_tag, repr(exc))
 
         # WS failed -> fallback
         if ws is None:
@@ -490,9 +499,9 @@ async def _handle_client(reader, writer, secret: bytes):
 
         await ws.send(relay_init)
 
-        await bridge_ws_reencrypt(clt_reader, clt_writer, ws, label,
+        await bridge_ws_reencrypt(clt_reader, clt_writer, ws, label, ctx,
                                    dc=dc, is_media=is_media,
-                                   ctx=ctx, splitter=splitter)
+                                   splitter=splitter)
 
     except asyncio.TimeoutError:
         log.warning("[%s] timeout during handshake", label)
@@ -506,7 +515,7 @@ async def _handle_client(reader, writer, secret: bytes):
         if getattr(exc, 'winerror', None) == 1236:
             log.debug("[%s] connection aborted by local system", label)
         else:
-            log.error("[%s] unexpected OS error: %s", label, exc)
+            log.error("[%s] unexpected OS error: %s", label, repr(exc))
     except Exception as exc:
         log.error("[%s] unexpected: %s", label, exc, exc_info=True)
     finally:
@@ -535,11 +544,8 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
     if proxy_config.fallback_cfproxy:
         user = proxy_config.cfproxy_user_domain
         if user:
-            proxy_config.cfproxy_domains = [user]
-            proxy_config.active_cfproxy_domain = user
+            balancer.update_domains_list([user])
         else:
-            proxy_config.cfproxy_domains = list(CFPROXY_DEFAULT_DOMAINS)
-            proxy_config.active_cfproxy_domain = random.choice(CFPROXY_DEFAULT_DOMAINS)
             start_cfproxy_domain_refresh()
 
     secret_bytes = bytes.fromhex(proxy_config.secret)
@@ -585,12 +591,11 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
         user_domain = "user" if proxy_config.cfproxy_user_domain else "auto"
         log.info("  CF proxy:      enabled (%s | %s)", prio, user_domain)
     log.info("=" * 60)
-    log.info("  Connect links:")
+    log.info("  Connect:")
     if ftls:
-        log.info("    ee (Fake TLS):        %s", ee_link)
+        log.info("    %s", ee_link)
     else:
-        log.info("       (standard):        %s", proxy_config.secret)
-        log.info("    dd (random padding):  %s", dd_link)
+        log.info("    %s", dd_link)
     log.info("=" * 60)
 
     async def log_stats():
@@ -716,7 +721,7 @@ def main():
     proxy_config.pool_size = max(0, args.pool_size)
     proxy_config.fallback_cfproxy = not args.no_cfproxy
     proxy_config.fallback_cfproxy_priority = args.cfproxy_priority
-    proxy_config.cfproxy_user_domain = args.cfproxy_domain
+    proxy_config.cfproxy_user_domain = args.cfproxy_domain.strip()
     proxy_config.fake_tls_domain = args.fake_tls_domain.strip()
     proxy_config.proxy_protocol = args.proxy_protocol
 

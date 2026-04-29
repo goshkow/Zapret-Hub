@@ -309,7 +309,7 @@ def _maybe_notify_update_async() -> None:
             ):
                 webbrowser.open(url)
         except Exception as exc:
-            log.debug("Update check failed: %s", exc)
+            log.warning("Update check failed: %s", exc)
 
     threading.Thread(target=_work, daemon=True, name="update-check").start()
 

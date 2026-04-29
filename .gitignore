@@ -3,7 +3,6 @@ __pycache__/
 *.py[cod]
 *.pyd
 *.so
-*.egg-info/
 
 # venv
 .venv/
@@ -30,18 +29,11 @@ backups/
 configs/
 core/
 default_packs/
-.onboarding_seen
 
 # local tools
 *.zip
 *.7z
 *.log
-.coverage
-
-# caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
 
 # ide
 .idea/

@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 from PyInstaller.utils.win32.versioninfo import (
     VSVersionInfo,
     FixedFileInfo,
@@ -15,8 +15,8 @@ from PyInstaller.utils.win32.versioninfo import (
 project_root = Path(SPECPATH).resolve().parent
 version_info = VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(1, 4, 1, 0),
-        prodvers=(1, 4, 1, 0),
+        filevers=(1, 4, 2, 0),
+        prodvers=(1, 4, 2, 0),
         mask=0x3F,
         flags=0x0,
         OS=0x40004,
@@ -32,11 +32,11 @@ version_info = VSVersionInfo(
                     [
                         StringStruct("CompanyName", "goshkow"),
                         StringStruct("FileDescription", "Zapret Hub"),
-                        StringStruct("FileVersion", "1.4.1"),
+                        StringStruct("FileVersion", "1.4.2"),
                         StringStruct("InternalName", "zapret_hub"),
                         StringStruct("OriginalFilename", "zapret_hub.exe"),
                         StringStruct("ProductName", "Zapret Hub"),
-                        StringStruct("ProductVersion", "1.4.1"),
+                        StringStruct("ProductVersion", "1.4.2"),
                         StringStruct("Publisher", "goshkow"),
                     ],
                 )
@@ -51,12 +51,13 @@ datas = [
     (str(project_root / "ui_assets"), "ui_assets"),
 ]
 crypto_hiddenimports = collect_submodules("cryptography")
+certifi_datas = collect_data_files("certifi")
 
 a = Analysis(
     [str(project_root / "src" / "zapret_hub" / "main.py")],
     pathex=[str(project_root / "src")],
     binaries=[],
-    datas=datas,
+    datas=datas + certifi_datas,
     hiddenimports=[
         "asyncio",
         "asyncio.base_events",

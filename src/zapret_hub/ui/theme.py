@@ -204,7 +204,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         padding: 0px 1px 1px 0px;
     }
     QToolButton[class="window"]:hover {
-        background: rgba(83, 108, 148, 0.25);
+        background: transparent;
     }
     QToolButton[class="window"][role="close"]:hover {
         background: rgba(170, 84, 97, 0.62);
@@ -216,7 +216,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         padding: 8px 12px;
     }
     QPushButton:hover {
-        background: #2d4268;
+        background: #243552;
     }
     QToolButton[class="action"] {
         min-width: 26px;
@@ -230,7 +230,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         margin: 0;
     }
     QToolButton[class="action"]:hover {
-        background: rgba(83, 108, 148, 0.25);
+        background: transparent;
     }
     QToolButton[class="action"]::menu-indicator {
         image: none;
@@ -253,7 +253,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         font-weight: 700;
     }
     QPushButton[class="primary"]:hover {
-        background: #6975ff;
+        background: #5865f2;
     }
     QPushButton[class="danger"] {
         background: #151f33;
@@ -262,7 +262,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         font-weight: 700;
     }
     QPushButton[class="danger"]:hover {
-        background: rgba(239, 68, 68, 0.12);
+        background: #151f33;
     }
     QToolButton[class="power"] {
         min-width: 132px;
@@ -667,7 +667,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         padding: 0px 1px 1px 0px;
     }
     QToolButton[class="window"]:hover {
-        background: rgba(148, 170, 205, 0.35);
+        background: transparent;
     }
     QToolButton[class="window"][role="close"]:hover {
         background: rgba(189, 99, 109, 0.62);
@@ -679,7 +679,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         padding: 8px 12px;
     }
     QPushButton:hover {
-        background: #e1ebff;
+        background: #edf3ff;
     }
     QToolButton[class="action"] {
         min-width: 26px;
@@ -693,7 +693,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         margin: 0;
     }
     QToolButton[class="action"]:hover {
-        background: rgba(148, 170, 205, 0.35);
+        background: transparent;
     }
     QToolButton[class="action"]::menu-indicator {
         image: none;
@@ -716,7 +716,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         font-weight: 700;
     }
     QPushButton[class="primary"]:hover {
-        background: #7cafff;
+        background: #5865f2;
     }
     QPushButton[class="danger"] {
         background: #ffffff;
@@ -725,7 +725,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
         font-weight: 700;
     }
     QPushButton[class="danger"]:hover {
-        background: rgba(239, 68, 68, 0.08);
+        background: #ffffff;
     }
     QToolButton[class="power"] {
         min-width: 132px;

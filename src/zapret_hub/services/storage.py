@@ -146,7 +146,7 @@ class StorageManager:
             "name": "Unified",
             "description": "РџРѕР·РІРѕР»СЏРµС‚ РѕР±РѕР№С‚Рё Р±Р»РѕРєРёСЂРѕРІРєРё СЃР°РјС‹С… РїРѕРїСѓР»СЏСЂРЅС‹С… СЃРµСЂРІРёСЃРѕРІ, РІРєР»СЋС‡Р°СЏ РёРіСЂРѕРІС‹Рµ СЃРµСЂРІРёСЃС‹, СЃРѕС†РёР°Р»СЊРЅС‹Рµ СЃРµС‚Рё Рё РґСЂСѓРіРёРµ РїР»Р°С‚С„РѕСЂРјС‹.",
             "author": "goshkow",
-                    "version": "1.4.1",
+                    "version": "1.4.2",
             "source_url": "bundled://unified-by-goshkow",
             "category": "gaming",
             "tags": ["gaming", "social", "cloudflare", "ubisoft", "arc-raiders"],
@@ -167,7 +167,7 @@ class StorageManager:
             ),
             None,
         )
-        desired_version = str(default_mod_meta.get("version", "1.4.1"))
+        desired_version = str(default_mod_meta.get("version", "1.4.2"))
         default_bundle = self._ensure_default_bundled_mod(
             default_mod_id,
             default_mod_meta,
@@ -265,7 +265,7 @@ class StorageManager:
         )
         return {
             "id": mod_id,
-                    "version": str(meta.get("version", "1.4.1")),
+                "version": str(meta.get("version", "1.4.2")),
             "path": str(target_dir),
             "enabled": False,
             "name": str(meta.get("name", "")),

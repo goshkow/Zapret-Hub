@@ -125,6 +125,32 @@ class ModsManager:
         self.merge.rebuild()
         self.logging.log("info", "Mod removed", mod_id=mod_id)
 
+    def export_mod(self, mod_id: str, target_dir: str) -> Path:
+        entry = next(item for item in self.list_installed() if item.id == mod_id)
+        source_dir = Path(entry.path)
+        if not source_dir.exists():
+            raise FileNotFoundError(f"Modification path not found: {source_dir}")
+        destination = Path(target_dir)
+        if destination.suffix.lower() == ".zip":
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            zip_path = destination
+        else:
+            destination.mkdir(parents=True, exist_ok=True)
+            zip_path = destination / f"{entry.id}-{entry.version or __version__}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+            for path in source_dir.rglob("*"):
+                if path.name == "__pycache__" or ".git" in path.parts:
+                    continue
+                if path.is_dir():
+                    continue
+                if path.suffix.lower() in {".pyc", ".pyo"}:
+                    continue
+                archive.write(path, path.relative_to(source_dir))
+        self.logging.log("info", "Mod exported", mod_id=mod_id, target=str(zip_path))
+        return zip_path
+
     def import_from_path(self, source_path: str) -> InstalledMod:
         return self.import_from_paths([source_path])
 

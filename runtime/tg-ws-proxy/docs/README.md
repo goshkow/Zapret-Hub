@@ -1,6 +1,6 @@
 > [!TIP]
 >
-> ### 🎉 Поддержать меня
+> ### [🎉 Поддержать меня](https://github.com/Flowseal/tg-ws-proxy/blob/main/docs/Funding.md)
 >
 > **USDT (TRC20)**: `TXPnKs2Ww1RD8JN6nChFUVmi5r2hqrWjuu`  
 > **BTC**: `bc1qr8vd6jelkyyry3m4mq6z5txdx4pl856fu6ss0w`  
@@ -280,7 +280,7 @@ Tray-приложение хранит данные в:
 
 ## Автоматическая сборка
 
-Проект содержит спецификации PyInstaller ([`packaging/windows.spec`](packaging/windows.spec), [`packaging/macos.spec`](packaging/macos.spec), [`packaging/linux.spec`](packaging/linux.spec)) и GitHub Actions workflow ([`.github/workflows/build.yml`](.github/workflows/build.yml)) для автоматической сборки.
+Проект содержит спецификации PyInstaller ([`packaging/windows.spec`](../packaging/windows.spec), [`packaging/macos.spec`](../packaging/macos.spec), [`packaging/linux.spec`](../packaging/linux.spec)) и GitHub Actions workflow ([`.github/workflows/build.yml`](../.github/workflows/build.yml)) для автоматической сборки.
 
 Минимально поддерживаемые версии ОС для текущих бинарных сборок:
 
@@ -293,4 +293,4 @@ Tray-приложение хранит данные в:
 
 ## Лицензия
 
-[MIT License](LICENSE)
+[MIT License](https://github.com/Flowseal/tg-ws-proxy/blob/main/LICENSE)

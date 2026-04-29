@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ctypes
+import base64
+from datetime import datetime
 import locale
 import os
 import platform
@@ -12,8 +14,9 @@ import time
 import zipfile
 from pathlib import Path
 
-from PySide6.QtCore import QSize, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QIcon, QMouseEvent, QShowEvent
+from installer.embedded_app_icon import APP_PNG_BASE64
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, Property, QPropertyAnimation, QRectF, QSize, QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QImage, QMouseEvent, QPainter, QPen, QPixmap, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -46,24 +49,287 @@ def _is_ru() -> bool:
 
 RU = _is_ru()
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\ZapretHub"
-
+INSTALLER_LOG_PATH = Path(tempfile.gettempdir()) / "zapret_hub_installer.log"
 
 def tr(ru: str, en: str) -> str:
     return ru if RU else en
 
 
-def resource_root() -> Path:
+def _resource_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    try:
+        file_path = Path(__file__).resolve()
+    except Exception:
+        file_path = None
     if getattr(sys, "frozen", False):
-        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    return Path(__file__).resolve().parents[1]
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir)
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            candidates.append(Path(meipass))
+        if file_path is not None:
+            candidates.append(file_path.parent)
+            for parent in file_path.parents:
+                candidates.append(parent)
+    else:
+        if file_path is not None:
+            candidates.append(file_path.parents[1])
+            candidates.append(file_path.parent)
+            for parent in file_path.parents:
+                candidates.append(parent)
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def resource_root() -> Path:
+    for candidate in _resource_candidates():
+        if (candidate / "ui_assets" / "icons" / "installer_runtime_icon.png").exists():
+            return candidate
+    for candidate in _resource_candidates():
+        if (candidate / "ui_assets" / "icons" / "app.png").exists():
+            return candidate
+    for candidate in _resource_candidates():
+        if (candidate / "ui_assets" / "icons" / "app.ico").exists():
+            return candidate
+    return _resource_candidates()[0]
+
+
+def payload_root() -> Path:
+    for candidate in _resource_candidates():
+        if (candidate / "installer_payload").exists():
+            return candidate
+        if (candidate / "win_x64.zip").exists() or (candidate / "win_arm64.zip").exists():
+            return candidate
+    return resource_root()
+
+
+def _installer_log(event: str, **context: object) -> None:
+    try:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        details = ", ".join(f"{key}={context[key]!r}" for key in sorted(context))
+        line = f"[{timestamp}] {event}"
+        if details:
+            line += f" | {details}"
+        with INSTALLER_LOG_PATH.open("a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+    except Exception:
+        return
+
+
+def _is_within_path(path: Path, root: Path) -> bool:
+    try:
+        resolved_path = path.resolve()
+        resolved_root = root.resolve()
+        resolved_path.relative_to(resolved_root)
+        return True
+    except Exception:
+        return False
+
+
+def _top_level_install_name(path: Path, install_dir: Path) -> str:
+    try:
+        relative = path.resolve().relative_to(install_dir.resolve())
+    except Exception:
+        return ""
+    parts = relative.parts
+    return parts[0] if parts else ""
+
+
+def _is_preserved_user_root(path: Path, install_dir: Path) -> bool:
+    return _top_level_install_name(path, install_dir) in {"data", "mods", "configs", "cache"}
+
+
+def _embedded_app_pixmap() -> QPixmap:
+    try:
+        raw = base64.b64decode(APP_PNG_BASE64)
+    except Exception:
+        return QPixmap()
+    image = QImage.fromData(raw, "PNG")
+    if image.isNull():
+        return QPixmap()
+    return QPixmap.fromImage(image)
+
+
+def app_icon() -> QIcon:
+    embedded = _embedded_app_pixmap()
+    if not embedded.isNull():
+        return QIcon(embedded)
+    installer_png_path = resource_root() / "ui_assets" / "icons" / "installer_runtime_icon.png"
+    if installer_png_path.exists():
+        image = QImage(str(installer_png_path))
+        if not image.isNull():
+            pixmap = QPixmap.fromImage(image)
+            if not pixmap.isNull():
+                return QIcon(pixmap)
+    png_path = resource_root() / "ui_assets" / "icons" / "app.png"
+    if png_path.exists():
+        image = QImage(str(png_path))
+        if not image.isNull():
+            pixmap = QPixmap.fromImage(image)
+            if not pixmap.isNull():
+                return QIcon(pixmap)
+    icon_path = resource_root() / "ui_assets" / "icons" / "app.ico"
+    if icon_path.exists():
+        icon = QIcon(str(icon_path))
+        if not icon.isNull():
+            return icon
+    if getattr(sys, "frozen", False):
+        icon = QIcon(str(Path(sys.executable)))
+        if not icon.isNull():
+            return icon
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setBrush(QColor("#5865f2"))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRoundedRect(QRectF(4, 4, 56, 56), 14, 14)
+    painter.setPen(QPen(QColor("#ffffff"), 4.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    painter.drawLine(20, 44, 30, 24)
+    painter.drawLine(30, 24, 44, 40)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def app_pixmap(size: int) -> QPixmap:
+    embedded = _embedded_app_pixmap()
+    dpr = 1.0
+    app_instance = QApplication.instance()
+    try:
+        if app_instance is not None and app_instance.primaryScreen() is not None:
+            dpr = max(1.0, float(app_instance.primaryScreen().devicePixelRatio()))
+    except Exception:
+        dpr = 1.0
+    target_px = max(size, int(round(size * dpr)))
+    if not embedded.isNull():
+        scaled = embedded.scaled(target_px, target_px, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        scaled.setDevicePixelRatio(dpr)
+        return scaled
+    installer_png_path = resource_root() / "ui_assets" / "icons" / "installer_runtime_icon.png"
+    if installer_png_path.exists():
+        image = QImage(str(installer_png_path))
+        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+        if not pixmap.isNull():
+            scaled = pixmap.scaled(target_px, target_px, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            scaled.setDevicePixelRatio(dpr)
+            return scaled
+    icon_path = resource_root() / "ui_assets" / "icons" / "app.png"
+    if icon_path.exists():
+        image = QImage(str(icon_path))
+        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+        if not pixmap.isNull():
+            scaled = pixmap.scaled(target_px, target_px, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            scaled.setDevicePixelRatio(dpr)
+            return scaled
+    ico_path = resource_root() / "ui_assets" / "icons" / "app.ico"
+    if ico_path.exists():
+        pixmap = QPixmap(str(ico_path))
+        if not pixmap.isNull():
+            scaled = pixmap.scaled(target_px, target_px, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            scaled.setDevicePixelRatio(dpr)
+            return scaled
+    return app_icon().pixmap(size, size)
+
+
+def close_icon() -> QIcon:
+    icon_path = resource_root() / "ui_assets" / "icons" / "window_close_dark.svg"
+    if icon_path.exists():
+        icon = QIcon(str(icon_path))
+        if not icon.isNull():
+            return icon
+    pixmap = QPixmap(24, 24)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor("#e7edf9"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    painter.drawLine(7, 7, 17, 17)
+    painter.drawLine(17, 7, 7, 17)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def close_pixmap(size: int) -> QPixmap:
+    icon = close_icon()
+    pixmap = icon.pixmap(size, size)
+    if not pixmap.isNull():
+        return pixmap
+    fallback = QPixmap(size, size)
+    fallback.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(fallback)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor("#e7edf9"), max(1.8, size / 10.0), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    inset = max(5, int(size * 0.28))
+    painter.drawLine(inset, inset, size - inset, size - inset)
+    painter.drawLine(size - inset, inset, inset, size - inset)
+    painter.end()
+    return fallback
+
+
+def apply_native_window_icons(widget: QWidget) -> None:
+    if not sys.platform.startswith("win"):
+        return
+    icon = app_icon()
+    try:
+        widget.setWindowIcon(icon)
+        app = QApplication.instance()
+        if app is not None:
+            app.setWindowIcon(icon)
+    except Exception:
+        pass
+
+
+def title_logo() -> QIcon:
+    png_path = resource_root() / "ui_assets" / "icons" / "app.png"
+    if png_path.exists():
+        icon = QIcon(str(png_path))
+        if not icon.isNull():
+            return icon
+    return app_icon()
 
 
 def default_install_dir() -> Path:
     return Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Zapret Hub"
 
 
+def _native_windows_machine() -> str:
+    if not sys.platform.startswith("win"):
+        return platform.machine().lower()
+    try:
+        process_machine = ctypes.c_ushort(0)
+        native_machine = ctypes.c_ushort(0)
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        is_wow64_process2 = getattr(kernel32, "IsWow64Process2", None)
+        if is_wow64_process2:
+            current_process = kernel32.GetCurrentProcess()
+            ok = is_wow64_process2(current_process, ctypes.byref(process_machine), ctypes.byref(native_machine))
+            if ok:
+                machine_map = {
+                    0x014c: "x86",
+                    0x8664: "amd64",
+                    0xAA64: "arm64",
+                }
+                return machine_map.get(int(native_machine.value), platform.machine().lower())
+    except Exception:
+        pass
+    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE") or platform.machine()).lower()
+    if "arm64" in arch or "aarch64" in arch:
+        return "arm64"
+    if "amd64" in arch or "x86_64" in arch or "x64" in arch:
+        return "amd64"
+    return arch
+
+
 def detect_payload_name() -> str:
-    machine = platform.machine().lower()
+    machine = _native_windows_machine()
     if "arm" in machine or "aarch64" in machine:
         return "win_arm64.zip"
     return "win_x64.zip"
@@ -78,25 +344,117 @@ def is_admin() -> bool:
         return False
 
 
-def relaunch_as_admin() -> bool:
+def relaunch_with_elevation(args: list[str]) -> bool:
     if not sys.platform.startswith("win"):
         return True
     if not getattr(sys, "frozen", False):
-        return True
-    if is_admin():
-        return True
-    cmd = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+        return False
+    cmd = " ".join(f'"{arg}"' for arg in args)
     result = ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
         None, "runas", sys.executable, cmd, None, 1
     )
     return int(result) > 32
 
 
+class ButtonInteractionOverlay(QWidget):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._progress = 0.0
+        self._pressed = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.hide()
+
+    def _get_progress(self) -> float:
+        return self._progress
+
+    def _set_progress(self, value: float) -> None:
+        self._progress = max(0.0, min(1.0, float(value)))
+        self.setVisible(self._progress > 0.001)
+        self.update()
+
+    progress = Property(float, _get_progress, _set_progress)
+
+    def set_pressed(self, pressed: bool) -> None:
+        self._pressed = bool(pressed)
+        self.update()
+
+    def paintEvent(self, event: QEvent) -> None:
+        if self._progress <= 0.001:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        base = self.parentWidget().palette().button().color() if self.parentWidget() is not None else QColor('#1f2430')
+        if base.lightness() < 128:
+            overlay = QColor(255, 255, 255)
+            max_alpha = 28 if not self._pressed else 42
+        else:
+            overlay = QColor(31, 41, 55)
+            max_alpha = 14 if not self._pressed else 22
+        overlay.setAlpha(int(max_alpha * self._progress))
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = min(18.0, max(8.0, min(rect.width(), rect.height()) / 2.0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(overlay)
+        painter.drawRoundedRect(rect, radius, radius)
+
+
+class ButtonInteractionFilter(QObject):
+    def __init__(self, widget: QWidget) -> None:
+        super().__init__(widget)
+        self._widget = widget
+        self._overlay = ButtonInteractionOverlay(widget)
+        self._overlay.setGeometry(widget.rect())
+        self._animation: QPropertyAnimation | None = None
+        widget.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._widget:
+            if event.type() in {QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.Move}:
+                self._overlay.setGeometry(self._widget.rect())
+                self._overlay.raise_()
+            elif event.type() == QEvent.Type.Enter:
+                self._overlay.raise_()
+                self._overlay.set_pressed(False)
+                self._animate(1.0, 180)
+            elif event.type() == QEvent.Type.Leave:
+                self._overlay.set_pressed(False)
+                self._animate(0.0, 180)
+            elif event.type() == QEvent.Type.MouseButtonPress:
+                self._overlay.raise_()
+                self._overlay.set_pressed(True)
+                self._animate(1.0, 90)
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                self._overlay.set_pressed(False)
+                self._animate(1.0 if self._widget.underMouse() else 0.0, 150)
+        return super().eventFilter(watched, event)
+
+    def _animate(self, target: float, duration: int) -> None:
+        if self._animation is not None:
+            self._animation.stop()
+        animation = QPropertyAnimation(self._overlay, b"progress", self)
+        animation.setDuration(duration)
+        animation.setStartValue(self._overlay.progress)
+        animation.setEndValue(target)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.start()
+        self._animation = animation
+
+
+def attach_button_animations(widget: QWidget) -> None:
+    if not isinstance(widget, (QPushButton, QToolButton)):
+        return
+    if widget.property("_interactionBound"):
+        return
+    widget.setProperty("_interactionBound", True)
+    ButtonInteractionFilter(widget)
+
+
 def set_windows_app_id() -> None:
     if not sys.platform.startswith("win"):
         return
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("goshkow.ZapretHub.Installer")  # type: ignore[attr-defined]
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("goshkow.ZapretHub.NuitkaInstaller.1.4.2.pngsync2")  # type: ignore[attr-defined]
     except Exception:
         return
 
@@ -319,20 +677,66 @@ def _safe_remove_item(path: Path, install_dir: Path | None = None) -> None:
 def _wipe_install_dir(install_dir: Path) -> None:
     if not install_dir.exists():
         return
+    ignored_leftovers = {"merged_runtime", "backups", "logs"}
     for _ in range(6):
         _terminate_running_instances(install_dir)
         for item in list(install_dir.iterdir()):
             try:
                 _safe_remove_item(item, install_dir)
             except Exception:
+                if item.name in ignored_leftovers:
+                    if _quarantine_item(item):
+                        continue
+                    continue
                 if _quarantine_item(item):
                     continue
                 raise
         if not any(install_dir.iterdir()):
             return
         time.sleep(0.5)
-    remaining = next((item for item in install_dir.iterdir()), install_dir)
+    remaining = next((item for item in install_dir.iterdir() if item.name not in ignored_leftovers), None)
+    if remaining is None:
+        return
     raise PermissionError(f"cannot replace: {remaining}")
+
+
+def _overlay_tree(source: Path, target: Path, install_dir: Path, preserve_names: set[str] | None = None) -> None:
+    if not _is_within_path(target, install_dir):
+        raise PermissionError(f"write target escaped install dir: {target}")
+    preserve_names = preserve_names or set()
+    target.mkdir(parents=True, exist_ok=True)
+    source_names = {item.name for item in source.iterdir()}
+    for existing in list(target.iterdir()):
+        if existing.name in preserve_names:
+            continue
+        if existing.name in source_names:
+            continue
+        try:
+            _safe_remove_item(existing, install_dir)
+        except Exception:
+            if not _quarantine_item(existing):
+                if existing.is_dir() and not _is_preserved_user_root(existing, install_dir):
+                    continue
+                raise
+    for item in source.iterdir():
+        if item.name in preserve_names:
+            continue
+        dst = target / item.name
+        if item.is_dir():
+            _overlay_tree(item, dst, install_dir)
+            continue
+        if dst.exists():
+            try:
+                _safe_remove_item(dst, install_dir)
+            except Exception:
+                if not _quarantine_item(dst) and _is_preserved_user_root(dst, install_dir):
+                    raise
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(item, dst)
+        except Exception:
+            if _is_preserved_user_root(dst, install_dir):
+                raise
 
 
 def _write_uninstall_registry(install_dir: Path, uninstaller_exe: Path, app_exe: Path) -> None:
@@ -435,7 +839,7 @@ class InstallerDialog(QDialog):
         self.setModal(True)
         self.setFixedSize(520, 230)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setWindowIcon(QIcon(str(resource_root() / "ui_assets" / "icons" / "app.ico")))
+        self.setWindowIcon(app_icon())
 
         root = QWidget(self)
         root.setObjectName("DlgRoot")
@@ -451,16 +855,18 @@ class InstallerDialog(QDialog):
         title_row.setContentsMargins(12, 8, 12, 8)
         title_row.setSpacing(8)
         icon = QLabel()
-        icon.setPixmap(QIcon(str(resource_root() / "ui_assets" / "icons" / "app.png")).pixmap(18, 18))
+        icon.setFixedSize(20, 20)
+        icon.setPixmap(app_icon().pixmap(20, 20))
         title_row.addWidget(icon)
         title_row.addWidget(QLabel(title))
         title_row.addStretch(1)
         close_btn = QToolButton()
         close_btn.setProperty("role", "close")
-        close_btn.setIcon(QIcon(str(resource_root() / "ui_assets" / "icons" / "window_close_dark.svg")))
+        close_btn.setIcon(QIcon(close_pixmap(14)))
         close_btn.setIconSize(QSize(14, 14))
         close_btn.setFixedSize(26, 26)
         close_btn.clicked.connect(self.reject)
+        attach_button_animations(close_btn)
         title_row.addWidget(close_btn)
         layout.addWidget(self.title_bar)
 
@@ -480,12 +886,15 @@ class InstallerDialog(QDialog):
             yes_btn = QPushButton(yes_text or tr("Да", "Yes"))
             yes_btn.setObjectName("primary")
             yes_btn.clicked.connect(self._accept_yes)
+            attach_button_animations(no_btn)
+            attach_button_animations(yes_btn)
             row.addWidget(no_btn)
             row.addWidget(yes_btn)
         else:
             ok_btn = QPushButton("OK")
             ok_btn.setObjectName("primary")
             ok_btn.clicked.connect(self.accept)
+            attach_button_animations(ok_btn)
             row.addWidget(ok_btn)
         body_layout.addLayout(row)
         layout.addWidget(body, 1)
@@ -505,6 +914,7 @@ class InstallerDialog(QDialog):
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         disable_native_window_rounding(int(self.winId()))
+        apply_native_window_icons(self)
         bring_widget_to_front(self)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -555,57 +965,65 @@ class InstallerWorker(QThread):
 
     def run(self) -> None:
         try:
-            root = resource_root()
-            payload_zip = root / "installer_payload" / detect_payload_name()
+            _installer_log(
+                "install_start",
+                cwd=str(Path.cwd()),
+                executable=str(sys.executable),
+                target_dir=str(self.target_dir),
+                preserve_data=bool(self.preserve_data),
+            )
+            root = payload_root()
+            payload_name = detect_payload_name()
+            payload_zip = root / "installer_payload" / payload_name
+            if not payload_zip.exists():
+                direct_payload_zip = root / payload_name
+                if direct_payload_zip.exists():
+                    payload_zip = direct_payload_zip
             if not payload_zip.exists():
                 raise FileNotFoundError(f"payload not found: {payload_zip}")
+            _installer_log("payload_resolved", payload_root=str(root), payload_zip=str(payload_zip))
 
             self.progress.emit(8)
             _terminate_running_instances(self.target_dir)
             self.target_dir.mkdir(parents=True, exist_ok=True)
             staging = Path(tempfile.mkdtemp(prefix="zapret_hub_install_"))
+            _installer_log("staging_created", staging=str(staging))
             self.progress.emit(18)
 
             with zipfile.ZipFile(payload_zip, "r") as archive:
                 archive.extractall(staging)
+            _installer_log("payload_extracted", staging=str(staging))
             self.progress.emit(45)
 
             source_root = staging / "zapret_hub"
             if not source_root.exists():
                 source_root = staging
+            _installer_log("source_root_resolved", source_root=str(source_root))
 
+            preserved_names = {"merged_runtime", "backups", "logs"}
             if self.preserve_data:
-                _terminate_running_instances(self.target_dir)
-                preserved_names = {"data", "mods", "configs", "cache"}
-                runtime_leftovers = {"merged_runtime"}
-                for item in source_root.iterdir():
-                    dst = self.target_dir / item.name
-                    if item.name in preserved_names:
+                preserved_names.update({"data", "mods", "configs", "cache"})
+            _terminate_running_instances(self.target_dir)
+            if not self.preserve_data:
+                for runtime_dir_name in ("merged_runtime", "backups", "logs"):
+                    runtime_dir = self.target_dir / runtime_dir_name
+                    if not runtime_dir.exists():
                         continue
-                    if item.name in runtime_leftovers and dst.exists():
-                        _safe_remove_item(dst, self.target_dir)
-                        continue
-                    if dst.exists():
-                        _safe_remove_item(dst, self.target_dir)
-            else:
-                _wipe_install_dir(self.target_dir)
+                    try:
+                        _safe_remove_item(runtime_dir, self.target_dir)
+                    except Exception:
+                        _quarantine_item(runtime_dir)
 
             self.progress.emit(70)
-            for item in source_root.iterdir():
-                dst = self.target_dir / item.name
-                if self.preserve_data and item.name in {"data", "mods", "configs", "cache"} and dst.exists():
-                    continue
-                if item.is_dir():
-                    shutil.copytree(item, dst, dirs_exist_ok=True)
-                else:
-                    if dst.exists():
-                        _safe_remove_item(dst, self.target_dir)
-                    shutil.copy2(item, dst)
+            _overlay_tree(source_root, self.target_dir, self.target_dir, preserved_names)
+            _installer_log("overlay_done", target_dir=str(self.target_dir))
 
             shutil.rmtree(staging, ignore_errors=True)
             self.progress.emit(100)
+            _installer_log("install_done", target_dir=str(self.target_dir))
             self.done.emit(True, "")
         except Exception as error:
+            _installer_log("install_failed", error=str(error))
             self.done.emit(False, str(error))
 
 
@@ -620,7 +1038,7 @@ class InstallerWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFixedSize(580, 380)
-        self.setWindowIcon(QIcon(str(resource_root() / "ui_assets" / "icons" / "app.ico")))
+        self.setWindowIcon(app_icon())
         self._build_ui()
         self._load_existing_install()
 
@@ -640,16 +1058,18 @@ class InstallerWindow(QMainWindow):
         title_row.setSpacing(8)
 
         icon = QLabel()
-        icon.setPixmap(QIcon(str(resource_root() / "ui_assets" / "icons" / "app.png")).pixmap(19, 19))
+        icon.setFixedSize(20, 20)
+        icon.setPixmap(app_pixmap(20))
         title_row.addWidget(icon)
         title_row.addWidget(QLabel("Zapret Hub"))
         title_row.addStretch(1)
         close_btn = QToolButton()
         close_btn.setProperty("role", "close")
-        close_btn.setIcon(QIcon(str(resource_root() / "ui_assets" / "icons" / "window_close_dark.svg")))
+        close_btn.setIcon(QIcon(close_pixmap(14)))
         close_btn.setIconSize(QSize(14, 14))
         close_btn.setFixedSize(26, 26)
         close_btn.clicked.connect(self.close)
+        attach_button_animations(close_btn)
         title_row.addWidget(close_btn)
         shell.addWidget(self.title_bar)
 
@@ -675,6 +1095,7 @@ class InstallerWindow(QMainWindow):
         self.path_edit = QLineEdit(str(self.install_path))
         browse_btn = QPushButton(tr("Обзор", "Browse"))
         browse_btn.clicked.connect(self._choose_dir)
+        attach_button_animations(browse_btn)
         path_row.addWidget(self.path_edit, 1)
         path_row.addWidget(browse_btn)
         start_layout.addLayout(path_row)
@@ -683,6 +1104,7 @@ class InstallerWindow(QMainWindow):
         install_btn.setObjectName("primary")
         install_btn.setMinimumHeight(42)
         install_btn.clicked.connect(self._start_install)
+        attach_button_animations(install_btn)
         start_layout.addWidget(install_btn)
         self.stack.addWidget(self.page_start)
 
@@ -716,6 +1138,7 @@ class InstallerWindow(QMainWindow):
         finish_btn.setObjectName("primary")
         finish_btn.setMinimumHeight(42)
         finish_btn.clicked.connect(self._finish)
+        attach_button_animations(finish_btn)
         done_layout.addWidget(finish_btn)
         self.stack.addWidget(self.page_done)
 
@@ -742,6 +1165,7 @@ class InstallerWindow(QMainWindow):
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         disable_native_window_rounding(int(self.winId()))
+        apply_native_window_icons(self)
         bring_widget_to_front(self)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -773,7 +1197,11 @@ class InstallerWindow(QMainWindow):
             self.path_edit.setText(picked)
 
     def _start_install(self) -> None:
-        self.install_path = Path(self.path_edit.text().strip() or str(default_install_dir()))
+        raw_path = self.path_edit.text().strip() or str(default_install_dir())
+        self.install_path = Path(raw_path).expanduser()
+        if not self.install_path.is_absolute():
+            self.install_path = (Path.cwd() / self.install_path).resolve()
+        _installer_log("ui_start_install", selected_path=raw_path, normalized_target=str(self.install_path))
         if self.install_path.exists():
             existing_items = [item for item in self.install_path.iterdir()]
         else:
@@ -785,6 +1213,18 @@ class InstallerWindow(QMainWindow):
             self.preserve_existing_data = choice == "preserve"
         else:
             self.preserve_existing_data = True
+        if sys.platform.startswith("win") and getattr(sys, "frozen", False) and not is_admin():
+            args = [
+                "--elevated-install",
+                "--install-dir",
+                str(self.install_path),
+                "--preserve-data" if self.preserve_existing_data else "--clean-install",
+            ]
+            if relaunch_with_elevation(args):
+                self.close()
+                return
+            InstallerDialog("Error", tr("Не удалось запросить права администратора.", "Failed to request administrator privileges."), parent=self).exec()
+            return
         self.stack.setCurrentWidget(self.page_progress)
         self.worker = InstallerWorker(self.install_path, preserve_data=self.preserve_existing_data)
         self.worker.progress.connect(self.bar.setValue)
@@ -844,6 +1284,13 @@ class InstallerWindow(QMainWindow):
             f"$Shortcut.IconLocation = '{str(target)},0'; "
             "$Shortcut.Save();"
         )
+        _installer_log(
+            "shortcut_prepare",
+            shortcut_target=str(target),
+            shortcut_workdir=str(target.parent),
+            shortcut_path=str(lnk_path),
+            desktop=bool(desktop),
+        )
         startup = None
         flags = 0
         if sys.platform.startswith("win"):
@@ -859,6 +1306,18 @@ class InstallerWindow(QMainWindow):
             startupinfo=startup,
         )
 
+    def _launch_installed_app(self, exe: Path) -> None:
+        if not exe.exists():
+            return
+        _installer_log("launch_target", launch_target=str(exe), launch_workdir=str(exe.parent))
+        if sys.platform.startswith("win"):
+            startup = subprocess.STARTUPINFO()
+            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup.wShowWindow = 1
+            subprocess.Popen([str(exe)], cwd=str(exe.parent), startupinfo=startup)
+            return
+        subprocess.Popen([str(exe)], cwd=str(exe.parent))
+
     def _finish(self) -> None:
         exe = self.install_path / "zapret_hub.exe"
         if self.desktop_cb.isChecked():
@@ -867,22 +1326,30 @@ class InstallerWindow(QMainWindow):
             self._create_shortcut(exe, "Zapret Hub", desktop=False)
         if exe.exists():
             try:
-                os.startfile(str(exe))  # type: ignore[attr-defined]
+                self._launch_installed_app(exe)
             except Exception:
                 pass
         self.close()
 
 
 def main() -> int:
-    if not relaunch_as_admin():
-        return 1
-    if not is_admin():
-        return 0
-
     set_windows_app_id()
+    if (
+        sys.platform.startswith("win")
+        and getattr(sys, "frozen", False)
+        and "--uninstall" not in sys.argv
+        and "--elevated-ui" not in sys.argv
+        and not is_admin()
+    ):
+        if relaunch_with_elevation(["--elevated-ui", *sys.argv[1:]]):
+            return 0
+        return 1
     if "--uninstall" in sys.argv:
+        if not is_admin():
+            relaunch_with_elevation(sys.argv[1:])
+            return 0
         app = QApplication(sys.argv)
-        app.setWindowIcon(QIcon(str(resource_root() / "ui_assets" / "icons" / "app.ico")))
+        app.setWindowIcon(app_icon())
         install_arg = ""
         if "--install-dir" in sys.argv:
             try:
@@ -916,9 +1383,20 @@ def main() -> int:
         return 0
 
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(str(resource_root() / "ui_assets" / "icons" / "app.ico")))
+    app.setWindowIcon(app_icon())
     window = InstallerWindow()
+    if "--install-dir" in sys.argv:
+        try:
+            window.path_edit.setText(sys.argv[sys.argv.index("--install-dir") + 1])
+        except Exception:
+            pass
     window.show()
+    if "--elevated-install" in sys.argv:
+        preserve_data = "--preserve-data" in sys.argv
+        if "--clean-install" in sys.argv:
+            preserve_data = False
+        window.preserve_existing_data = preserve_data
+        QTimer.singleShot(0, window._start_install)
     return app.exec()
 
 

@@ -14,10 +14,12 @@ class FilesManager:
         self.storage = storage
         self.settings = settings
         self._overrides_path = self.storage.paths.data_dir / "file_overrides.json"
+        self._collection_cache: dict[str, tuple[tuple[tuple[str, int, int], ...], list[str]]] = {}
         self.allowed_roots = [
             self.storage.paths.configs_dir,
             self.storage.paths.default_packs_dir,
             self.storage.paths.mods_dir,
+            self.storage.paths.runtime_dir,
             self.storage.paths.merged_runtime_dir,
             self.storage.paths.data_dir,
         ]
@@ -44,10 +46,14 @@ class FilesManager:
             for item in self._collection_definitions()
         ]
 
+    def local_hosts_path(self) -> Path:
+        return self.storage.paths.runtime_dir / "zapret-discord-youtube" / ".service" / "hosts"
+
     def read_collection(self, kind: str) -> list[str]:
+        layered_values = self._read_cached_layered_collection_values(kind)
         values: list[str] = []
         seen: set[str] = set()
-        for value in self._read_layered_collection_values(kind):
+        for value in layered_values:
             if value in seen:
                 continue
             seen.add(value)
@@ -60,6 +66,7 @@ class FilesManager:
         return values
 
     def write_collection(self, kind: str, values: list[str]) -> None:
+        self._invalidate_collection_cache(kind)
         managed = set(self._managed_collection_values(kind))
         normalized = [item for item in self.normalize_collection_values(kind, values) if item not in managed]
         base_set = set(self._read_base_collection_values(kind))
@@ -91,6 +98,7 @@ class FilesManager:
         return current
 
     def reset_user_overrides(self) -> None:
+        self._collection_cache.clear()
         self._write_overrides({})
         for kind in self._collection_definitions():
             self._materialize_user_collection(str(kind["id"]))
@@ -280,6 +288,31 @@ class FilesManager:
             result.append(item)
         return result
 
+    def _read_cached_layered_collection_values(self, kind: str) -> list[str]:
+        signature = self._collection_signature(kind)
+        cached = self._collection_cache.get(kind)
+        if cached is not None and cached[0] == signature:
+            return list(cached[1])
+        values = self._read_layered_collection_values(kind)
+        self._collection_cache[kind] = (signature, list(values))
+        return values
+
+    def _collection_signature(self, kind: str) -> tuple[tuple[str, int, int], ...]:
+        signature: list[tuple[str, int, int]] = []
+        for path in self._collection_source_paths(kind):
+            try:
+                stat = path.stat()
+                signature.append((str(path), int(stat.st_mtime_ns), int(stat.st_size)))
+            except OSError:
+                signature.append((str(path), 0, 0))
+        return tuple(signature)
+
+    def _invalidate_collection_cache(self, kind: str | None = None) -> None:
+        if kind is None:
+            self._collection_cache.clear()
+            return
+        self._collection_cache.pop(kind, None)
+
     def _read_overrides(self) -> dict[str, dict[str, list[str]]]:
         raw = self.storage.read_json(self._overrides_path, default={}) or {}
         if not isinstance(raw, dict):
@@ -313,10 +346,29 @@ class FilesManager:
             for path in merged_root.glob("active_zapret*")
             if path.is_dir() and (path / "lists").exists()
         ]
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item.parent.stat().st_mtime, reverse=True)
-        return candidates[0]
+        if candidates:
+            candidates.sort(key=lambda item: item.parent.stat().st_mtime, reverse=True)
+            return candidates[0]
+        materialized = merged_root / "_materialized_lists" / "lists"
+        if materialized.exists():
+            return materialized
+        return None
+
+    def rebuild_materialized_collections(self) -> None:
+        materialized_root = self.storage.paths.merged_runtime_dir / "_materialized_lists"
+        lists_dir = materialized_root / "lists"
+        lists_dir.mkdir(parents=True, exist_ok=True)
+        mapping = {
+            "domains": "list-general.txt",
+            "exclude_domains": "list-exclude.txt",
+            "all_ips": "ipset-all.txt",
+            "ips": "ipset-exclude.txt",
+        }
+        for kind, filename in mapping.items():
+            values = self._read_layered_base_without_merged_runtime(kind) or []
+            target = lists_dir / filename
+            target.write_text("\n".join(values) + ("\n" if values else ""), encoding="utf-8")
+        self._invalidate_collection_cache()
 
     def _merged_collection_path(self, kind: str, lists_dir: Path) -> Path:
         mapping = {
@@ -365,10 +417,14 @@ class FilesManager:
     def _is_editable_file(self, path: Path) -> bool:
         suffix = path.suffix.lower()
         if suffix not in {".txt", ".bat", ".cmd", ".json", ".yaml", ".yml"}:
+            if path == self.local_hosts_path():
+                return True
             return False
         lowered = path.name.lower()
         if lowered.endswith(".backup"):
             return False
+        if path == self.local_hosts_path():
+            return True
         if path.is_relative_to(self.storage.paths.configs_dir):
             return True
         if path.is_relative_to(self.storage.paths.mods_dir):
@@ -378,6 +434,9 @@ class FilesManager:
             )
         if path.is_relative_to(self.storage.paths.default_packs_dir):
             return path.parent.name.lower() in {"lists", "utils"}
+        runtime_service_dir = self.storage.paths.runtime_dir / "zapret-discord-youtube" / ".service"
+        if path.is_relative_to(runtime_service_dir):
+            return path.name.lower() == "hosts"
         return False
 
     def _collection_definitions(self) -> list[dict[str, str]]:

@@ -1,11 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 import shutil
 import secrets
-import sys
 from typing import Any
 
 from zapret_hub.domain import AppPaths
+from zapret_hub.runtime_env import development_install_root, is_packaged_runtime, packaged_install_root, packaged_resource_root
 from zapret_hub.services.autostart import AutostartManager
 from zapret_hub.services.components import ProcessManager
 from zapret_hub.services.diagnostics import DiagnosticsManager
@@ -17,7 +17,6 @@ from zapret_hub.services.profiles import ProfilesManager
 from zapret_hub.services.settings import SettingsManager
 from zapret_hub.services.storage import StorageManager
 from zapret_hub.services.updates import UpdatesManager
-
 
 @dataclass(slots=True)
 class ApplicationContext:
@@ -37,11 +36,11 @@ class ApplicationContext:
 
 
 def bootstrap_application() -> ApplicationContext:
-    if getattr(sys, "frozen", False):
-        install_root = Path(sys.executable).resolve().parent
-        resource_root = Path(getattr(sys, "_MEIPASS", install_root))
+    if is_packaged_runtime():
+        install_root = packaged_install_root()
+        resource_root = packaged_resource_root()
     else:
-        install_root = Path.cwd()
+        install_root = development_install_root(__file__)
         resource_root = install_root
 
     runtime_dir = install_root / "runtime"
@@ -101,6 +100,24 @@ def bootstrap_application() -> ApplicationContext:
     )
 
 
+def build_startup_snapshot(context: ApplicationContext) -> dict[str, Any]:
+    current = context.settings.get()
+    general_options = list(context.processes.list_zapret_generals())
+    if not str(current.selected_zapret_general or "").strip() and general_options:
+        context.settings.update(selected_zapret_general=str(general_options[0]["id"]))
+        current = context.settings.get()
+    return {
+        "components": [asdict(item) for item in context.processes.list_components()],
+        "states": [asdict(item) for item in context.processes.list_states()],
+        "settings": {
+            "selected_zapret_general": current.selected_zapret_general,
+            "favorite_zapret_generals": list(current.favorite_zapret_generals or []),
+            "enabled_mod_ids": list(current.enabled_mod_ids or []),
+        },
+        "general_options": general_options,
+    }
+
+
 def _prime_first_run_state(settings: SettingsManager, processes: ProcessManager) -> None:
     current = settings.get()
     changes: dict[str, Any] = {}
@@ -110,10 +127,6 @@ def _prime_first_run_state(settings: SettingsManager, processes: ProcessManager)
         changes["zapret_ipset_mode"] = "loaded"
     if str(current.zapret_game_filter_mode or "").strip() not in {"auto", "disabled", "all", "tcp", "udp"}:
         changes["zapret_game_filter_mode"] = "disabled"
-    if not str(current.selected_zapret_general or "").strip():
-        options = processes.list_zapret_generals()
-        if options:
-            changes["selected_zapret_general"] = str(options[0]["id"])
     if changes:
         settings.update(**changes)
 
