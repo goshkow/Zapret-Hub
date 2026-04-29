@@ -35,7 +35,6 @@ if (-not $SkipPrepareRelease) {
 
 & $Python -m nuitka `
   --onefile `
-  --onefile-no-compression `
   --assume-yes-for-downloads `
   --no-deployment-flag=self-execution `
   --zig `

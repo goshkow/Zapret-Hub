@@ -262,6 +262,24 @@ class UpdatesManager:
               }}
             }}
 
+            function Add-UpdateLog([string]$message) {{
+              try {{
+                Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] ' + $message)
+              }} catch {{}}
+            }}
+
+            function Test-StandalonePayload([string]$sourceDir) {{
+              return (Test-Path (Join-Path $sourceDir 'python311.dll')) -and
+                     (Test-Path (Join-Path $sourceDir 'python3.dll')) -and
+                     (Test-Path (Join-Path $sourceDir 'zapret_hub.exe'))
+            }}
+
+            function Test-InstalledStandalone([string]$targetDir) {{
+              return (Test-Path (Join-Path $targetDir 'python311.dll')) -and
+                     (Test-Path (Join-Path $targetDir 'python3.dll')) -and
+                     (Test-Path (Join-Path $targetDir 'zapret_hub.exe'))
+            }}
+
             function Overlay-Tree([string]$sourceDir, [string]$targetDir, [string[]]$preserveNames) {{
               New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
               $sourceItems = Get-ChildItem -LiteralPath $sourceDir -Force -ErrorAction SilentlyContinue
@@ -285,7 +303,11 @@ class UpdatesManager:
                     [void](Remove-PathRobust $dest)
                   }}
                   New-Item -ItemType Directory -Path (Split-Path $dest -Parent) -Force | Out-Null
-                  Copy-Item $item.FullName $dest -Force
+                  try {{
+                    Copy-Item $item.FullName $dest -Force -ErrorAction Stop
+                  }} catch {{
+                    Add-UpdateLog ('copy failed: ' + $item.FullName + ' -> ' + $dest + ' | ' + $_.Exception.Message)
+                  }}
                 }}
               }}
             }}
@@ -322,8 +344,35 @@ class UpdatesManager:
             }}
             Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] preserved user dirs')
 
+            $sourceIsStandalone = Test-StandalonePayload $src
+            if ($sourceIsStandalone) {{
+              Add-UpdateLog 'standalone payload detected'
+              $oldInternal = Join-Path $dst '_internal'
+              if (Test-Path $oldInternal) {{
+                [void](Remove-PathRobust $oldInternal)
+                Add-UpdateLog 'old _internal removed for standalone update'
+              }}
+            }}
+
             Overlay-Tree $src $dst $preserve
             Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] payload copied')
+
+            if ($sourceIsStandalone -and -not (Test-InstalledStandalone $dst)) {{
+              Add-UpdateLog 'standalone validation failed after overlay, retrying top-level runtime files'
+              foreach ($fileName in @('zapret_hub.exe', 'python311.dll', 'python3.dll')) {{
+                $sourceFile = Join-Path $src $fileName
+                $targetFile = Join-Path $dst $fileName
+                if (Test-Path $sourceFile) {{
+                  [void](Remove-PathRobust $targetFile)
+                  try {{
+                    Copy-Item $sourceFile $targetFile -Force -ErrorAction Stop
+                    Add-UpdateLog ('runtime file copied: ' + $fileName)
+                  }} catch {{
+                    Add-UpdateLog ('runtime file copy failed: ' + $fileName + ' | ' + $_.Exception.Message)
+                  }}
+                }}
+              }}
+            }}
 
             foreach ($item in $preserve) {{
               $backupItem = Join-Path $backupRoot $item
@@ -339,8 +388,14 @@ class UpdatesManager:
             }}
             Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] user data restored')
 
+            if ($sourceIsStandalone -and -not (Test-InstalledStandalone $dst)) {{
+              Add-UpdateLog 'standalone validation failed, aborting relaunch to avoid broken install'
+              exit 2
+            }}
+
             Start-Sleep -Milliseconds 400
-            Start-Process -FilePath $launch
+            $launch = Join-Path $dst 'zapret_hub.exe'
+            Start-Process -FilePath $launch -WorkingDirectory $dst
             Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format s) + '] relaunched app')
             Remove-Item $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
