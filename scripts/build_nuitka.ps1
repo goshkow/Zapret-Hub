@@ -76,9 +76,9 @@ $nuitkaArgs = @(
 )
 
 if ($Compiler -eq "zig") {
-    $nuitkaArgs = @("--zig") + $nuitkaArgs
+    $nuitkaArgs = @("-m", "nuitka", "--zig") + $nuitkaArgs[2..($nuitkaArgs.Length - 1)]
 } else {
-    $nuitkaArgs = @("--msvc=latest") + $nuitkaArgs
+    $nuitkaArgs = @("-m", "nuitka", "--msvc=latest") + $nuitkaArgs[2..($nuitkaArgs.Length - 1)]
 }
 
 & $Python @nuitkaArgs
