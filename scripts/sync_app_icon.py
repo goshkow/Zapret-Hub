@@ -3,8 +3,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PIL import Image
 from PySide6.QtGui import QImage
+
+try:
+    from PIL import Image
+except ModuleNotFoundError:
+    Image = None
 
 
 def main() -> int:
@@ -24,6 +28,8 @@ def main() -> int:
             raise RuntimeError(f"Failed to save ICO icon: {ico_path}")
     shell_source = shell_png_path if shell_png_path.exists() else png_path
     try:
+        if Image is None:
+            raise RuntimeError("Pillow is not installed")
         base = Image.open(shell_source).convert("RGBA")
         sizes = [(16, 16), (20, 20), (24, 24), (32, 32), (40, 40), (48, 48), (64, 64), (96, 96), (128, 128), (256, 256)]
         base.save(str(shell_ico_path), format="ICO", sizes=sizes)
