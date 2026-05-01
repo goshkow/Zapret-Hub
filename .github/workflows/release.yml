@@ -22,6 +22,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Clean workspace
+        shell: pwsh
+        run: |
+          Remove-Item .\dist_nuitka -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\.nuitka_staging -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\installer_payload -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\release_1.4.3 -Recurse -Force -ErrorAction SilentlyContinue
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -37,7 +45,7 @@ jobs:
 
       - name: Build Nuitka x64
         shell: pwsh
-        run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka
+        run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka -Compiler zig
 
       - name: Upload x64 artifact
         uses: actions/upload-artifact@v6
@@ -51,6 +59,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Clean workspace
+        shell: pwsh
+        run: |
+          Remove-Item .\dist_nuitka -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\.nuitka_staging -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\installer_payload -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\release_1.4.3 -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -70,7 +86,7 @@ jobs:
 
       - name: Build Nuitka arm64
         shell: pwsh
-        run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka
+        run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka -Compiler msvc
 
       - name: Upload arm64 artifact
         uses: actions/upload-artifact@v6
@@ -89,6 +105,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Clean workspace
+        shell: pwsh
+        run: |
+          Remove-Item .\dist_nuitka -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\dist_installer -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\.nuitka_staging -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\.artifacts -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\installer_payload -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\release_1.4.3 -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Set up Python
         uses: actions/setup-python@v6
