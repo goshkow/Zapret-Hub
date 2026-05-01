@@ -31,25 +31,7 @@ jobs:
 
       - name: Build Nuitka x64
         shell: pwsh
-        run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka
-
-      - name: Prepare release payloads
-        shell: pwsh
-        run: >
-          python .\scripts\prepare_nuitka_release.py
-          --x64-source .\dist_nuitka\main.dist
-          --arm64-source .\.release_cache\win_arm64
-          --payload-dir .\installer_payload
-          --release-dir .\release_1.4.3
-          --version 1.4.3
-
-      - name: Build universal installer
-        shell: pwsh
-        run: .\scripts\build_nuitka_installer.ps1 -Python python -PayloadDir installer_payload -OutputDir dist_installer -SkipPrepareRelease
-
-      - name: Place installer into release folder
-        shell: pwsh
-        run: Copy-Item .\dist_installer\install_zaprethub_1.4.3_universal.exe .\release_1.4.3\ -Force
+        run: .\scripts\build_nuitka.ps1 -Python python -OutputDir dist_nuitka -Compiler zig
 
       - name: SignPath placeholder
         shell: pwsh
@@ -61,6 +43,4 @@ jobs:
           name: zapret-hub-ci-windows
           path: |
             dist_nuitka/main.dist/**
-            dist_installer/install_zaprethub_1.4.3_universal.exe
-            release_1.4.3/**
           if-no-files-found: error

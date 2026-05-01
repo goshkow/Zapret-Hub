@@ -1535,7 +1535,7 @@ class SettingsDialog(AppDialog):
         self._smooth_scroll_helpers: list[SmoothScrollController] = []
         super().__init__(parent, context, self._t("Настройки", "Settings"))
         self.setMinimumWidth(520)
-        self.resize(560, 780)
+        self.resize(600, 980)
         layout = self.body_layout
 
         self.theme_combo = ClickSelectComboBox()
@@ -1548,7 +1548,7 @@ class SettingsDialog(AppDialog):
         self.tg_secret_input = QLineEdit()
         self.tg_media_mode_combo = ClickSelectComboBox()
         self.tg_media_mode_combo.addItem(self._t("Стандартный", "Default"), "default")
-        self.tg_media_mode_combo.addItem(self._t("Фото/видео fix", "Photo/video fix"), "media_fix")
+        self.tg_media_mode_combo.addItem("Media fix", "media_fix")
         self.tg_media_mode_combo.addItem(self._t("Без DC override", "No DC override"), "empty")
         self.tg_dc_ip_input = QTextEdit()
         self.tg_dc_ip_input.setFixedHeight(72)
@@ -1578,8 +1578,8 @@ class SettingsDialog(AppDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setMinimumHeight(390)
-        scroll.setMaximumHeight(540)
+        scroll.setMinimumHeight(560)
+        scroll.setMaximumHeight(760)
         canvas = QWidget()
         canvas.setObjectName("SettingsCanvas")
         canvas_layout = QVBoxLayout(canvas)
@@ -1620,10 +1620,10 @@ class SettingsDialog(AppDialog):
             self._t(
                 "Credits: original zapret bundle and tg-ws-proxy by Flowseal.\n"
                 "Original zapret ecosystem by bol-van.\n"
-                f"This app is a separate management UI.\nVersion: {__version__}",
+                f"This app is a separate management UI.\nVersion: {__version__} | Author: goshkow",
                 "Credits: original zapret bundle and tg-ws-proxy by Flowseal.\n"
                 "Original zapret ecosystem by bol-van.\n"
-                f"This app is a separate management UI.\nVersion: {__version__}",
+                f"This app is a separate management UI.\nVersion: {__version__} | Author: goshkow",
             )
         )
         credits.setProperty("class", "muted")
@@ -3097,12 +3097,6 @@ class MainWindow(QMainWindow):
                 "components.svg",
             ),
             (
-                self._t("Редактирование файлов", "Advanced editor"),
-                self._t("Открыть полноценный список файлов и текстовый редактор.", "Open the full file list and the text editor."),
-                "advanced",
-                "files_editor.svg",
-            ),
-            (
                 "Hosts",
                 self._t(
                     "Открыть локальный файл .service/hosts из встроенного Zapret.",
@@ -3110,6 +3104,12 @@ class MainWindow(QMainWindow):
                 ),
                 "hosts",
                 "files.svg",
+            ),
+            (
+                self._t("Редактирование файлов", "Advanced editor"),
+                self._t("Открыть полноценный список файлов и текстовый редактор.", "Open the full file list and the text editor."),
+                "advanced",
+                "files_editor.svg",
             ),
         ]
         self._file_mode_cards = []
@@ -4960,7 +4960,7 @@ class MainWindow(QMainWindow):
             return
         if mode in {"advanced", "hosts", "generals"}:
             self._cancel_file_tag_render()
-            self._current_file_list_filter = "generals" if mode == "generals" else "all"
+            self._current_file_list_filter = "generals" if mode == "generals" else ("hosts" if mode == "hosts" else "all")
             self._preferred_file_path = str(self.context.files.local_hosts_path()) if mode == "hosts" else ""
             self._file_mode_stack.setCurrentIndex(2)
             self._use_file_search_variant("document")
@@ -4968,7 +4968,7 @@ class MainWindow(QMainWindow):
             self.file_path_label.setText(
                 self._t("Загрузка General...", "Loading General...")
                 if mode == "generals"
-                else self._t("Загрузка файлов...", "Loading files...")
+                else ("Hosts" if mode == "hosts" else self._t("Загрузка файлов...", "Loading files..."))
             )
             self.file_editor.clear()
             self.files_list.clear()
@@ -5087,7 +5087,7 @@ class MainWindow(QMainWindow):
             "mode_index": mode_index,
             "collection_id": collection_id,
             "file_filter": file_filter,
-            "records": self._general_file_records_sync() if (mode_index == 2 and file_filter == "generals") else (self.context.files.list_files() if mode_index == 2 else None),
+            "records": self._file_records_for_filter_sync(file_filter) if mode_index == 2 else None,
             "collection_values": self.context.files.read_collection(collection_id) if mode_index == 1 else None,
         }
 
@@ -5827,7 +5827,6 @@ class MainWindow(QMainWindow):
 
     def _show_update_prompt(self, release: dict[str, str]) -> None:
         dialog = AppDialog(self, self.context, self._t("Доступно обновление", "Update available"))
-        dialog.setMinimumWidth(760)
         message = QLabel(
             self._t(
                 f"Вышла новая версия Zapret Hub.\n\nТекущая версия: {release.get('current_version', '')}\nНовая версия: {release.get('latest_version', '')}",
@@ -5848,22 +5847,29 @@ class MainWindow(QMainWindow):
                     "is_latest": True,
                 }
             ]
+        show_version_list = len(release_list) > 1
+        dialog.setMinimumWidth(760 if show_version_list else 620)
 
         body_shell = QWidget()
+        body_shell.setObjectName("UpdatePromptBody")
         body_layout = QHBoxLayout(body_shell)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(10)
+        body_shell.setStyleSheet("#UpdatePromptBody { background: transparent; border: none; }")
 
         versions_list = QListWidget()
         versions_list.setMaximumWidth(170)
         versions_list.setMinimumHeight(160)
         versions_list.setSpacing(6)
-        body_layout.addWidget(versions_list, 0)
+        if show_version_list:
+            body_layout.addWidget(versions_list, 0)
 
         notes = QTextEdit()
         notes.setReadOnly(True)
         notes.setMinimumHeight(160)
         notes.setMaximumHeight(260)
+        notes.setMinimumWidth(520 if not show_version_list else 0)
+        notes.setMaximumWidth(560 if not show_version_list else 16777215)
         notes.setProperty("class", "muted")
         body_layout.addWidget(notes, 1)
 
@@ -5875,13 +5881,13 @@ class MainWindow(QMainWindow):
             row_item = QListWidgetItem(title)
             row_item.setData(Qt.ItemDataRole.UserRole, dict(item))
             row_item.setSizeHint(QSize(140, 38))
-            versions_list.addItem(row_item)
+            if show_version_list:
+                versions_list.addItem(row_item)
 
-        def _select_release(item: QListWidgetItem | None) -> None:
-            if item is None:
+        def _render_release(payload: object) -> None:
+            if not isinstance(payload, dict):
                 notes.clear()
                 return
-            payload = item.data(Qt.ItemDataRole.UserRole) or {}
             version = str(payload.get("version", "")).strip()
             body = str(payload.get("body", "")).strip()
             html_url = str(payload.get("html_url", "")).strip()
@@ -5893,9 +5899,15 @@ class MainWindow(QMainWindow):
                 parts.append(body)
             notes.setPlainText("\n".join(parts).strip())
 
-        versions_list.currentItemChanged.connect(_select_release)
-        if versions_list.count() > 0:
-            versions_list.setCurrentRow(0)
+        def _select_release(item: QListWidgetItem | None) -> None:
+            _render_release(item.data(Qt.ItemDataRole.UserRole) if item is not None else {})
+
+        if show_version_list:
+            versions_list.currentItemChanged.connect(_select_release)
+            if versions_list.count() > 0:
+                versions_list.setCurrentRow(0)
+        elif release_list:
+            _render_release(release_list[0])
         dialog.body_layout.addWidget(body_shell)
 
         next_launch_checkbox = QCheckBox(self._t("Обновить при следующем запуске", "Update on next launch"))
@@ -6519,12 +6531,24 @@ class MainWindow(QMainWindow):
                 "mode_index": mode_index,
                 "collection_id": collection_id,
                 "file_filter": file_filter,
-                "records": self._general_file_records_sync() if (mode_index == 2 and file_filter == "generals") else (self.context.files.list_files() if mode_index == 2 else None),
+                "records": self._file_records_for_filter_sync(file_filter) if mode_index == 2 else None,
                 "collection_values": self.context.files.read_collection(collection_id) if mode_index == 1 else None,
             }
             self._ui_signals.page_payload_ready.emit("files", payload)
         except Exception:
             self._ui_signals.page_payload_ready.emit("files", {"_token": token, "mode_index": mode_index, "collection_id": collection_id, "file_filter": file_filter, "records": None, "collection_values": None})
+
+    def _file_records_for_filter_sync(self, file_filter: str) -> list[FileRecord]:
+        if file_filter == "generals":
+            return self._general_file_records_sync()
+        if file_filter == "hosts":
+            path = self.context.files.ensure_local_hosts_file()
+            try:
+                relative = str(path.relative_to(self.context.paths.install_root))
+            except ValueError:
+                relative = str(path)
+            return [FileRecord(path=str(path), relative_path=relative, size=path.stat().st_size)]
+        return self.context.files.list_files()
 
     def _general_file_records_sync(self) -> list[FileRecord]:
         records: list[FileRecord] = []
@@ -6564,7 +6588,7 @@ class MainWindow(QMainWindow):
                 mode_index = self._file_mode_stack.currentIndex() if self._file_mode_stack is not None else 0
                 collection_id = self._current_file_collection
                 payload = {
-                    "records": self._general_file_records_sync() if (mode_index == 2 and self._current_file_list_filter == "generals") else (self.context.files.list_files() if mode_index == 2 else None),
+                    "records": self._file_records_for_filter_sync(self._current_file_list_filter) if mode_index == 2 else None,
                     "collection_values": self.context.files.read_collection(collection_id) if mode_index == 1 else None,
                     "collection_id": collection_id,
                     "mode_index": mode_index,
@@ -8330,7 +8354,7 @@ class MainWindow(QMainWindow):
             self.file_path_label.setText(
                 self._t("General-файлы не найдены", "No General files found")
                 if self._current_file_list_filter == "generals"
-                else self._t("Файлы не найдены", "No files found")
+                else ("Hosts" if self._current_file_list_filter == "hosts" else self._t("Файлы не найдены", "No files found"))
             )
             self.file_editor.clear()
             self._set_file_editor_loading(False)

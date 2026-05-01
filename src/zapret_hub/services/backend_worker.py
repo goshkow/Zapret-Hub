@@ -59,6 +59,15 @@ def _general_file_records(context) -> list[FileRecord]:
     return sorted(records, key=lambda item: item.relative_path.lower())
 
 
+def _host_file_records(context) -> list[FileRecord]:
+    path = context.files.ensure_local_hosts_file()
+    try:
+        relative = str(path.relative_to(context.paths.install_root))
+    except ValueError:
+        relative = str(path)
+    return [FileRecord(path=str(path), relative_path=relative, size=path.stat().st_size)]
+
+
 def _restart_zapret_if_running(context) -> None:
     states = {item.component_id: item for item in context.processes.list_states()}
     if states.get("zapret") and states["zapret"].status == "running":
@@ -392,12 +401,20 @@ def _run_action(context, action: str, payload: dict[str, Any], emit_progress: ca
         mode_index = int(payload.get("mode_index", 0) or 0)
         collection_id = str(payload.get("collection_id", "")).strip()
         file_filter = str(payload.get("file_filter", "all") or "all")
+        records = None
+        if mode_index == 2:
+            if file_filter == "generals":
+                records = _general_file_records(context)
+            elif file_filter == "hosts":
+                records = _host_file_records(context)
+            else:
+                records = context.files.list_files()
         return {
             "files_payload": {
                 "mode_index": mode_index,
                 "collection_id": collection_id,
                 "file_filter": file_filter,
-                "records": _general_file_records(context) if (mode_index == 2 and file_filter == "generals") else (context.files.list_files() if mode_index == 2 else None),
+                "records": records,
                 "collection_values": context.files.read_collection(collection_id) if mode_index == 1 else None,
             }
         }

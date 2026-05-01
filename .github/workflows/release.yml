@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Git tag or release version (for example v1.4.3)"
+        description: "Git tag or release version (for example v1.4.4)"
         required: true
-        default: "v1.4.3"
+        default: "v1.4.4"
       release_name:
         description: "Release title"
         required: true
-        default: "Zapret Hub 1.4.3"
+        default: "Zapret Hub 1.4.4"
       changelog:
         description: "Release changelog"
         required: true
@@ -28,7 +28,7 @@ jobs:
           Remove-Item .\dist_nuitka -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item .\.nuitka_staging -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item .\installer_payload -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item .\release_1.4.3 -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\release_1.4.4 -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -66,7 +66,7 @@ jobs:
           Remove-Item .\dist_nuitka -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item .\.nuitka_staging -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item .\installer_payload -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item .\release_1.4.3 -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\release_1.4.4 -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -114,7 +114,7 @@ jobs:
           Remove-Item .\.nuitka_staging -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item .\.artifacts -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item .\installer_payload -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item .\release_1.4.3 -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item .\release_1.4.4 -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -148,8 +148,8 @@ jobs:
           --x64-source .\.artifacts\win_x64
           --arm64-source .\.artifacts\win_arm64
           --payload-dir .\installer_payload
-          --release-dir .\release_1.4.3
-          --version 1.4.3
+          --release-dir .\release_1.4.4
+          --version 1.4.4
 
       - name: Build universal installer
         shell: pwsh
@@ -157,7 +157,7 @@ jobs:
 
       - name: Place installer into release folder
         shell: pwsh
-        run: Copy-Item .\dist_installer\install_zaprethub_1.4.3_universal.exe .\release_1.4.3\ -Force
+        run: Copy-Item .\dist_installer\install_zaprethub_1.4.4_universal.exe .\release_1.4.4\ -Force
 
       - name: SignPath placeholder
         shell: pwsh
@@ -170,5 +170,5 @@ jobs:
           name: ${{ inputs.release_name }}
           body: ${{ inputs.changelog }}
           files: |
-            release_1.4.3/install_zaprethub_1.4.3_universal.exe
-            release_1.4.3/*portable*.zip
+            release_1.4.4/install_zaprethub_1.4.4_universal.exe
+            release_1.4.4/*portable*.zip

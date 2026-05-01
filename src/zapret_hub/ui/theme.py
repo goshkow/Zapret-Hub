@@ -80,7 +80,7 @@ def build_stylesheet(theme: str, chevron_icon: str = "", check_icon: str = "") -
     }
     QFrame[class="settingsSection"] {
         background: #141f32;
-        border: 1px solid #1b2940;
+        border: 1px solid #243550;
         border-radius: 14px;
     }
     #LoadingOverlay {

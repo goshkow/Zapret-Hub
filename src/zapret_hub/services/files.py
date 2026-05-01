@@ -49,6 +49,13 @@ class FilesManager:
     def local_hosts_path(self) -> Path:
         return self.storage.paths.runtime_dir / "zapret-discord-youtube" / ".service" / "hosts"
 
+    def ensure_local_hosts_file(self) -> Path:
+        path = self.local_hosts_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("", encoding="utf-8")
+        return path
+
     def read_collection(self, kind: str) -> list[str]:
         layered_values = self._read_cached_layered_collection_values(kind)
         values: list[str] = []
