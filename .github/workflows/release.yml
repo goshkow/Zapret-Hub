@@ -13,7 +13,8 @@ on:
         default: "Zapret Hub 1.4.4"
       changelog:
         description: "Release changelog"
-        required: true
+        required: false
+        default: ""
 
 jobs:
   build-windows-x64:
@@ -163,12 +164,27 @@ jobs:
         shell: pwsh
         run: .\scripts\signpath_stub.ps1 -InputPath ".\.artifacts\win_x64\zapret_hub.exe"
 
+      - name: Read release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          $version = "${{ inputs.tag }}".TrimStart("v")
+          $notesPath = ".\.github\release-notes\$version.md"
+          if (Test-Path $notesPath) {
+            $body = Get-Content $notesPath -Raw -Encoding UTF8
+          } else {
+            $body = "${{ inputs.changelog }}"
+          }
+          "body<<__ZAPRET_HUB_NOTES__" >> $env:GITHUB_OUTPUT
+          $body >> $env:GITHUB_OUTPUT
+          "__ZAPRET_HUB_NOTES__" >> $env:GITHUB_OUTPUT
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           name: ${{ inputs.release_name }}
-          body: ${{ inputs.changelog }}
+          body: ${{ steps.release_notes.outputs.body }}
           files: |
             release_1.4.4/install_zaprethub_1.4.4_universal.exe
             release_1.4.4/*portable*.zip

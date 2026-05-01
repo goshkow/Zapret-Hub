@@ -26,7 +26,7 @@ class AppSettings:
     tg_proxy_host: str = "127.0.0.1"
     tg_proxy_port: int = 1443
     tg_proxy_secret: str = ""
-    tg_proxy_dc_ip: str = "2:149.154.167.220\n4:149.154.167.220"
+    tg_proxy_dc_ip: str = "4:149.154.167.220"
     tg_proxy_cfproxy_enabled: bool = True
     tg_proxy_cfproxy_priority: bool = True
     tg_proxy_cfproxy_domain: str = ""
