@@ -34,9 +34,9 @@
   </a>
 </p>
 
-**Автор**: goshkow • [GitHub](https://github.com/goshkow/Zapret-Hub) • [Задать вопрос](https://t.me/+dHQ1GrBGSdxmNzAy)
+**Автор**: goshkow • [GitHub](https://github.com/goshkow/Zapret-Hub) • [Задать вопрос](https://t.me/zzaprethub)
 
-Что-то не работает? • [Исправить](#не-работает) • [Создать issue](https://github.com/goshkow/Zapret-Hub/issues) • [Поддержка](https://t.me/+dHQ1GrBGSdxmNzAy)
+Что-то не работает? • [Исправить](#не-работает) • [Создать issue](https://github.com/goshkow/Zapret-Hub/issues) • [Поддержка](https://t.me/zzaprethub)
 
 </div>
 
