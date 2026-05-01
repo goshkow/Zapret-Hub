@@ -61,10 +61,80 @@ class DiagnosticsManager:
         return DiagnosticResult("Mods", "ok", f"Installed: {len(installed)}, enabled: {len(enabled)}", {"enabled": enabled})
 
     def _check_merged_config(self) -> DiagnosticResult:
+        merged_root = self.storage.paths.merged_runtime_dir
+        visible_runtime = merged_root / "zapret"
+        visible_status = self._check_zapret_runtime_tree(visible_runtime, visible=True)
+        if visible_status is not None:
+            return visible_status
+
+        active_candidates: list[Path] = []
+        if merged_root.exists():
+            active_candidates = sorted(
+                (path for path in merged_root.glob("active_zapret*") if path.is_dir()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        for candidate in active_candidates:
+            active_status = self._check_zapret_runtime_tree(candidate, visible=False)
+            if active_status is not None:
+                return active_status
+
+        materialized_lists = merged_root / "_materialized_lists" / "lists"
+        if materialized_lists.exists():
+            list_files = [
+                materialized_lists / "list-general.txt",
+                materialized_lists / "list-exclude.txt",
+                materialized_lists / "ipset-all.txt",
+                materialized_lists / "ipset-exclude.txt",
+            ]
+            if any(path.exists() for path in list_files):
+                return DiagnosticResult(
+                    "Merged runtime",
+                    "ok",
+                    "Materialized lists are available",
+                    {"path": str(materialized_lists)},
+                )
+
         state = self.merge.get_state()
         if state is None:
+            base_runtime = self.storage.paths.runtime_dir / "zapret-discord-youtube"
+            if base_runtime.exists():
+                return DiagnosticResult(
+                    "Merged runtime",
+                    "ok",
+                    "Base Zapret runtime is available; merged runtime will be built on start",
+                    {"path": str(base_runtime)},
+                )
             return DiagnosticResult("Merged runtime", "warning", "Merged runtime has not been built yet")
         merged_path = Path(state.merged_path)
         if not merged_path.exists():
-            return DiagnosticResult("Merged runtime", "error", "Merged config file is missing", {"path": state.merged_path})
-        return DiagnosticResult("Merged runtime", "ok", "Merged runtime is available", {"path": state.merged_path})
+            return DiagnosticResult(
+                "Merged runtime",
+                "warning",
+                "Merged runtime will be rebuilt when Zapret starts",
+                {"path": state.merged_path},
+            )
+        return DiagnosticResult("Merged runtime", "ok", "Legacy merged config is available", {"path": state.merged_path})
+
+    def _check_zapret_runtime_tree(self, root: Path, *, visible: bool) -> DiagnosticResult | None:
+        if not root.exists():
+            return None
+
+        missing = []
+        if not (root / "bin" / "winws.exe").exists():
+            missing.append("bin/winws.exe")
+        if not (root / "lists").exists():
+            missing.append("lists")
+        if not any(root.glob("general*.bat")):
+            missing.append("general*.bat")
+
+        if missing:
+            return DiagnosticResult(
+                "Merged runtime",
+                "warning",
+                f"Merged Zapret runtime is incomplete: {', '.join(missing)}",
+                {"path": str(root), "missing": missing},
+            )
+
+        message = "Merged Zapret runtime is available" if visible else "Active Zapret runtime is available"
+        return DiagnosticResult("Merged runtime", "ok", message, {"path": str(root)})
